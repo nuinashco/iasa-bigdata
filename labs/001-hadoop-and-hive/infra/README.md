@@ -165,7 +165,7 @@ nothing, i.e. local mode). Without this, Hive has no idea the `namenode`/
 ## Usage
 
 ```bash
-cd labs/001-hadoop-and-hive/docker
+cd labs/001-hadoop-and-hive/infra
 docker compose up -d          # start the whole cluster
 docker compose ps             # check container health
 docker compose logs -f hive-server   # watch HiveServer2 startup
