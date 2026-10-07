@@ -1,0 +1,6 @@
+# XeLaTeX (fontspec + system Times New Roman); biber runs automatically when a .bib is used.
+$pdf_mode = 5;
+$aux_dir = 'build';
+# TeX Live has no native aux directory: latexmk emulates it so only the PDF stays next to the .tex.
+$emulate_aux = 1;
+$xelatex = 'xelatex -interaction=nonstopmode -file-line-error %O %S';

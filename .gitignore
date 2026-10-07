@@ -219,3 +219,6 @@ __marimo__/
 
 # Lab datasets
 labs/*/data/
+
+# LaTeX auxiliary files (latex/build.sh)
+labs/*/report/build/
