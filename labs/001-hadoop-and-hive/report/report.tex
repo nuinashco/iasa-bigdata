@@ -1,0 +1,597 @@
+% Build: latex/build.sh labs/001-hadoop-and-hive/report/report.tex
+\documentclass{iasa-lab}
+\addbibresource{references.bib}
+
+\labnumber{1}
+\topic{Розподілена обробка даних в Apache Hadoop та Apache Hive}
+\student{Гавлицький Іван}
+\studentgroup{КІ-61мп}
+
+\begin{document}
+
+\maketitle
+
+\tableofcontents
+\clearpage
+
+% ============================================================================================
+\anonsection{Мета роботи}
+
+Ознайомитися з архітектурою та принципами роботи розподіленої файлової системи HDFS; набути практичних навичок роботи з командним рядком Hadoop; вивчити основи створення сховищ даних в Apache Hive (DDL, DML операції); опанувати методи оптимізації зберігання даних (Partitioning, Bucketing) та виконати задачу MapReduce.
+
+% ============================================================================================
+\section{Опис задачі та вхідних даних}
+
+\subsection{Постановка задачі}
+
+Відповідно до завдання необхідно:
+\begin{enumerate}
+  \item завантажити CSV-файли юридичних осіб (UO) та фізичних осіб-підприємців (FOP) скриптом на Python і розмістити їх у HDFS (\texttt{/tables\_data/UO}, \texttt{/tables\_data/FOP});
+  \item створити в Apache Hive зовнішні таблиці \texttt{uo\_table} і \texttt{fop\_table} поверх цих даних з використанням \texttt{OpenCSVSerde};
+  \item виконати аналітичні запити: підрахунок записів з порівнянням часу з традиційною СКБД, нумерацію юридичних осіб у межах адреси віконною функцією \texttt{row\_number()} та з'єднання таблиць за адресою реєстрації;
+  \item реалізувати партиціювання (таблиця \texttt{uo\_part} за станом юридичної особи) та бакетинг (10 бакетів за кодом ЄДРПОУ), порівняти час виконання запитів зі звичайною таблицею;
+  \item виконати задачу WordCount з вбудованої бібліотеки прикладів Hadoop з різною кількістю редюсерів і проаналізувати розподіл слів між вихідними файлами.
+\end{enumerate}
+
+\subsection{Програмне середовище}
+
+Кластер розгорнуто локально в Docker (Docker Compose). Склад сервісів наведено в табл.~\ref{tab:services}. Hive налаштовано на виконання запитів рушієм MapReduce (\texttt{hive.execution.engine=mr}) у кластері YARN, сховище даних Hive (\texttt{/user/hive/warehouse}) розташоване в HDFS. Оскільки кластер має один DataNode, фактор реплікації встановлено рівним 1. Для порівняння з традиційною СКБД до кластера додано PostgreSQL~17.
+
+\begin{table}[H]
+  \caption{Сервіси кластера}\label{tab:services}
+  \begin{tabularx}{\textwidth}{|l|l|Y|}
+    \hline
+    Сервіс & Образ Docker & Призначення \\
+    \hline
+    namenode & bde2020/hadoop-namenode & простір імен HDFS, відображення файлів на блоки \\
+    datanode & bde2020/hadoop-datanode & зберігання блоків даних \\
+    resourcemanager & bde2020/hadoop-resourcemanager & планування задач YARN \\
+    nodemanager & bde2020/hadoop-nodemanager & виконання контейнерів map/reduce \\
+    historyserver & bde2020/hadoop-historyserver & історія завершених задач \\
+    hive-server & apache/hive:3.1.3 & HiveServer2, метастор Derby \\
+    postgres & postgres:17 & реляційна СКБД для порівняння \\
+    \hline
+  \end{tabularx}
+\end{table}
+
+Усі кроки лабораторної роботи виконано в ноутбуці Jupyter (див. додаток~А): він запускає кластер, завантажує дані, виконує команди HDFS, запити HiveQL та задачу MapReduce. Стан кластера після запуску показано на рис.~\ref{fig:cluster}.
+
+\addshot{cluster-ps.png}{Контейнери кластера після запуску}{fig:cluster}
+
+\subsection{Вхідні дані}
+
+Основне джерело -- Єдиний державний реєстр юридичних осіб, фізичних осіб-підприємців та громадських формувань~\cite{edr2022}. Поточні відкриті дані реєстру на порталі data.gov.ua не містять адрес і видів діяльності (КВЕД), без яких неможливі запити завдання~3, тому використано останнє вивантаження, що їх містить, -- від 08.04.2022 (архів XML у кодуванні Windows-1251, 461 МБ). Скрипт \texttt{download\_data.py} (додаток~Б) завантажує архів, перевіряє контрольну суму SHA-256 і потоково перетворює XML на CSV у кодуванні UTF-8. Структуру отриманих файлів наведено в табл.~\ref{tab:data}.
+
+\begin{table}[H]
+  \caption{Структура вхідних даних}\label{tab:data}
+  \begin{tabularx}{\textwidth}{|l|r|r|Y|}
+    \hline
+    Файл & Записів & Розмір & Поля \\
+    \hline
+    UO.csv & 1\,853\,363 & 1,2 ГБ & name, edrpou, address, boss, founders, kved, stan \\
+    FOP.csv & 5\,792\,593 & 2,0 ГБ & fio, address, kved, stan \\
+    \hline
+  \end{tabularx}
+\end{table}
+
+Поле \texttt{stan} (стан суб'єкта) має 7 значень для UO та 6 для FOP, наприклад «зареєстровано», «припинено», «в стані припинення». Для задачі WordCount використано логи HDFS реального Hadoop-кластера -- набір \texttt{HDFS\_v1} з колекції Loghub~\cite{loghub}: 11,2 млн рядків, 1,5 ГБ.
+
+% ============================================================================================
+\section{Хід роботи}
+
+\subsection{Підготовка та завантаження даних у HDFS}
+
+Результат виконання скрипта завантаження наведено на рис.~\ref{fig:download}: перетворення XML на CSV тривало 75~с для UO та 107~с для FOP.
+
+\addshot{download.png}{Завантаження та перетворення даних скриптом download\_data.py}{fig:download}
+
+Папка з CSV-файлами змонтована в контейнер \texttt{namenode} як \texttt{/data}. Перед записом у HDFS виконано команду \texttt{hdfs dfsadmin -safemode wait}: після запуску NameNode файлова система перебуває в режимі лише для читання (safe mode), доки DataNode не повідомлять про свої блоки. Далі створено директорії, завантажено файли та перевірено їх наявність (рис.~\ref{fig:hdfs-ls}).
+
+\addshot{hdfs-put-ls.png}{Створення директорій, завантаження файлів і перевірка командою hdfs dfs -ls}{fig:hdfs-ls}
+
+Розбиття файлу на блоки показує команда \texttt{hdfs fsck} (рис.~\ref{fig:fsck}): файл UO.csv розміром 1\,200\,075\,063 байти зберігається у 9 блоках -- 8 повних по 128 МБ (134\,217\,728 байт) і останньому неповному; кожен блок має одну репліку (\texttt{Live\_repl=1}).
+
+\addshot{hdfs-fsck.png}{Блоки файлу UO.csv у HDFS}{fig:fsck}
+
+\subsection{Створення таблиць в Apache Hive}
+
+Зовнішні таблиці описують CSV-файли в HDFS, не копіюючи їх (лістинги~\ref{lst:uo-table},~\ref{lst:fop-table}). Порівняно з прикладом у завданні виправлено значення \texttt{quoteChar} (\verb|"\""| замість \verb|"\"|) та додано властивість \texttt{skip.header.line.count}, оскільки CSV-файли містять рядок заголовка.
+
+\begin{lstlisting}[language=HiveQL, caption={Створення зовнішньої таблиці uo\_table}, label={lst:uo-table}]
+CREATE EXTERNAL TABLE IF NOT EXISTS uo_table (
+    name     STRING,
+    edrpou   STRING,
+    address  STRING,
+    boss     STRING,
+    founders STRING,
+    kved     STRING,
+    stan     STRING
+)
+ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'
+WITH SERDEPROPERTIES (
+    "separatorChar" = ",",
+    "quoteChar"     = "\""
+)
+STORED AS TEXTFILE
+LOCATION '/tables_data/UO'
+TBLPROPERTIES ("skip.header.line.count" = "1")
+\end{lstlisting}
+
+\begin{lstlisting}[language=HiveQL, caption={Створення зовнішньої таблиці fop\_table}, label={lst:fop-table}]
+CREATE EXTERNAL TABLE IF NOT EXISTS fop_table (
+    fio     STRING,
+    address STRING,
+    kved    STRING,
+    stan    STRING
+)
+ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'
+WITH SERDEPROPERTIES (
+    "separatorChar" = ",",
+    "quoteChar"     = "\""
+)
+STORED AS TEXTFILE
+LOCATION '/tables_data/FOP'
+TBLPROPERTIES ("skip.header.line.count" = "1")
+\end{lstlisting}
+
+Коректність створення таблиць перевірено запитами \texttt{SELECT * ... LIMIT 10} (рис.~\ref{fig:uo-preview},~\ref{fig:fop-preview}): значення в лапках, що містять коми, розібрано правильно, кирилиця відображається коректно. Такі запити Hive виконує без запуску MapReduce (fetch task), тому вони тривають менше 3~с.
+
+\addshot{uo-preview.png}{Перші 10 рядків таблиці uo\_table}{fig:uo-preview}
+
+\addshot{fop-preview.png}{Перші 10 рядків таблиці fop\_table}{fig:fop-preview}
+
+Команда \texttt{DESCRIBE FORMATTED} (рис.~\ref{fig:describe}) підтверджує тип таблиці \texttt{EXTERNAL\_TABLE}, розташування даних \texttt{hdfs://namenode:9000/tables\_data/UO} та використання \texttt{OpenCSVSerde}. Усі колонки мають тип \texttt{string}: \texttt{OpenCSVSerde} не підтримує інших типів.
+
+\addshot{describe-uo.png}{Метадані таблиці uo\_table}{fig:describe}
+
+\subsection{Аналітичні запити}
+
+\subsubsection{Агрегація даних}
+
+Для порівняння з традиційною СКБД ті самі CSV-файли завантажено в PostgreSQL командою \texttt{COPY} (лістинг~\ref{lst:pg-load}); завантаження тривало 19,6~с для UO та 33,7~с для FOP.
+
+\begin{lstlisting}[language=SQL, caption={Завантаження даних у PostgreSQL}, label={lst:pg-load}]
+CREATE TABLE IF NOT EXISTS uo (
+    name     TEXT,
+    edrpou   TEXT,
+    address  TEXT,
+    boss     TEXT,
+    founders TEXT,
+    kved     TEXT,
+    stan     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS fop (
+    fio     TEXT,
+    address TEXT,
+    kved    TEXT,
+    stan    TEXT
+);
+
+TRUNCATE uo, fop;
+
+COPY uo FROM '/data/UO.csv' WITH (FORMAT csv, HEADER true);
+COPY fop FROM '/data/FOP.csv' WITH (FORMAT csv, HEADER true);
+
+VACUUM ANALYZE uo;
+VACUUM ANALYZE fop;
+\end{lstlisting}
+
+Hive може відповідати на \texttt{COUNT(*)} зі статистики таблиці в метасторі, не читаючи дані, тому перед вимірюваннями цю оптимізацію вимкнено (\texttt{SET hive.compute.query.using.stats=false}). Запит (лістинг~\ref{lst:count}) виконано тричі для кожної таблиці в обох системах; результати наведено на рис.~\ref{fig:count} і в табл.~\ref{tab:count}.
+
+\begin{lstlisting}[language=HiveQL, caption={Підрахунок кількості записів}, label={lst:count}]
+SELECT
+    COUNT(*) AS rows_count
+
+FROM
+    uo_table
+\end{lstlisting}
+
+\addshot{count-compare.png}{Час виконання COUNT(*) у Hive та PostgreSQL}{fig:count}
+
+\begin{table}[H]
+  \caption{Час виконання COUNT(*), медіана трьох запусків}\label{tab:count}
+  \begin{tabularx}{\textwidth}{|X|r|r|r|r|}
+    \hline
+    Таблиця & Записів & Прочитано & Hive, с & PostgreSQL, с \\
+    \hline
+    UO  & 1\,853\,363 & 1,1 ГБ & 28,18 & 0,15 \\
+    FOP & 5\,792\,593 & 1,9 ГБ & 37,16 & 0,29 \\
+    \hline
+  \end{tabularx}
+\end{table}
+
+\subsubsection{Нумерація юридичних осіб у межах адреси}
+
+Представлення \texttt{uo\_numbered} нумерує юридичних осіб у межах кожної адреси за зростанням коду ЄДРПОУ (лістинг~\ref{lst:numbered}). Найбільший номер на адресі дорівнює кількості зареєстрованих на ній юридичних осіб, що дозволяє знайти адреси масової реєстрації (лістинг~\ref{lst:mass}, рис.~\ref{fig:mass}).
+
+\begin{lstlisting}[language=HiveQL, caption={Нумерація юридичних осіб у межах адреси}, label={lst:numbered}]
+CREATE OR REPLACE VIEW uo_numbered AS
+SELECT
+    name,
+    edrpou,
+    address,
+    ROW_NUMBER() OVER (PARTITION BY address ORDER BY edrpou) AS rn
+
+FROM
+    uo_table
+\end{lstlisting}
+
+\begin{lstlisting}[language=HiveQL, caption={Адреси масової реєстрації}, label={lst:mass}]
+SELECT
+    address,
+    MAX(rn) AS companies
+
+FROM
+    uo_numbered
+
+GROUP BY address
+
+ORDER BY companies DESC
+
+LIMIT 20
+\end{lstlisting}
+
+\addshot{mass-registration.png}{Адреси з найбільшою кількістю юридичних осіб}{fig:mass}
+
+Усі 20 адрес масової реєстрації розташовані в Києві; лідер -- вул. Мельникова, 12 (2187 юридичних осіб). Запит виконувався 96~с: віконна функція потребує сортування всіх 1,85 млн записів за адресою. Помітна також проблема якості даних: «ВУЛИЦЯ ЗООЛОГІЧНА, будинок 4А, офіс 139» (729) і «будинок 4-А, офіс 139» (440) -- одна адреса, записана по-різному. Перші юридичні особи на адресі-лідері наведено на рис.~\ref{fig:top-address} (лістинг~\ref{lst:top-address}).
+
+\begin{lstlisting}[language=HiveQL, caption={Юридичні особи на адресі масової реєстрації}, label={lst:top-address}]
+SELECT
+    rn,
+    edrpou,
+    name
+
+FROM
+    uo_numbered
+
+WHERE 1=1
+    AND address = 'Україна, 04050, місто Київ, ВУЛИЦЯ МЕЛЬНИКОВА, будинок 12'
+
+ORDER BY rn
+
+LIMIT 20
+\end{lstlisting}
+
+\addshot{top-address.png}{Перші 20 юридичних осіб на вул. Мельникова, 12}{fig:top-address}
+
+\subsubsection{З'єднання таблиць за адресою реєстрації}
+
+З'єднання \texttt{uo\_table} і \texttt{fop\_table} за адресою (лістинги~\ref{lst:join-summary},~\ref{lst:join-top}) знаходить адреси, на яких зареєстровані і юридичні особи, і ФОП. Таких адрес 122\,917, пар «юридична особа -- ФОП» -- 1\,870\,748 (рис.~\ref{fig:join-summary}).
+
+\begin{lstlisting}[language=HiveQL, caption={Кількість спільних адрес і пар}, label={lst:join-summary}]
+SELECT
+    COUNT(DISTINCT u.address) AS shared_addresses,
+    COUNT(*) AS pairs
+
+FROM
+    uo_table AS u
+
+INNER JOIN
+    fop_table AS f
+    ON u.address = f.address
+\end{lstlisting}
+
+\addshot{join-summary.png}{Розмір з'єднання UO та FOP за адресою}{fig:join-summary}
+
+\begin{lstlisting}[language=HiveQL, caption={Адреси з найбільшою кількістю пар}, label={lst:join-top}]
+SELECT
+    u.address,
+    COUNT(DISTINCT u.edrpou) AS uo_count,
+    COUNT(DISTINCT f.fio) AS fop_count,
+    COUNT(*) AS pairs
+
+FROM
+    uo_table AS u
+
+INNER JOIN
+    fop_table AS f
+    ON u.address = f.address
+
+GROUP BY u.address
+
+ORDER BY pairs DESC
+
+LIMIT 20
+\end{lstlisting}
+
+\addshot{join-top.png}{Спільні адреси з найбільшою кількістю пар}{fig:join-top}
+
+Найбільше пар (208\,530) дає неповна адреса «місто Кіровоград(п)» без вулиці: на неї записано 210 юридичних осіб і 992 ФОП. Далі йдуть адреси сіл Чернівецької області, де адреса суб'єкта часто складається лише з назви населеного пункту. Отже, перетин адрес відображає не лише реальні офіси спільного використання, а й неповноту адрес у реєстрі. Запити з'єднання найдовші в роботі (101,7 і 140,5~с), бо читають обидві таблиці (3,0--3,3 ГБ) і перерозподіляють дані між редюсерами за ключем з'єднання.
+
+\subsection{Партиціювання}
+
+Для коректного порівняння створено базову керовану таблицю \texttt{uo\_plain} -- копію \texttt{uo\_table} у тому ж форматі, що й оптимізовані таблиці (текстовий формат Hive без лапок), але без партицій і бакетів (лістинг~\ref{lst:plain}). Порівняння з нею показує саме ефект партиціювання чи бакетингу, а не різницю між \texttt{OpenCSVSerde} і стандартним форматом.
+
+\begin{lstlisting}[language=HiveQL, caption={Базова керована таблиця uo\_plain}, label={lst:plain}]
+DROP TABLE IF EXISTS uo_plain;
+
+CREATE TABLE uo_plain
+STORED AS TEXTFILE
+AS
+SELECT *
+FROM uo_table
+\end{lstlisting}
+
+Керовану таблицю \texttt{uo\_part} партиціоновано за станом юридичної особи (лістинг~\ref{lst:part}). Партиції створюються динамічно під час \texttt{INSERT INTO ... SELECT} (лістинг~\ref{lst:part-insert}): Hive бере значення \texttt{stan} з останньої колонки запиту. Режим \texttt{nonstrict} потрібен, оскільки єдина колонка партиціювання задається динамічно, а за замовчуванням (\texttt{strict}) Hive вимагає хоча б однієї статичної.
+
+\begin{lstlisting}[language=HiveQL, caption={Створення партиціонованої таблиці uo\_part}, label={lst:part}]
+DROP TABLE IF EXISTS uo_part;
+
+CREATE TABLE uo_part (
+    name     STRING,
+    edrpou   STRING,
+    address  STRING,
+    boss     STRING,
+    founders STRING,
+    kved     STRING
+)
+PARTITIONED BY (stan STRING)
+STORED AS TEXTFILE
+\end{lstlisting}
+
+\begin{lstlisting}[language=HiveQL, caption={Наповнення таблиці uo\_part}, label={lst:part-insert}]
+SET hive.exec.dynamic.partition=true;
+SET hive.exec.dynamic.partition.mode=nonstrict;
+
+INSERT INTO TABLE uo_part PARTITION (stan)
+SELECT
+    name,
+    edrpou,
+    address,
+    boss,
+    founders,
+    kved,
+    stan
+
+FROM
+    uo_table
+\end{lstlisting}
+
+Наповнення тривало 61~с. Кожна партиція -- окрема піддиректорія \texttt{stan=<значення>} у директорії таблиці в сховищі Hive (рис.~\ref{fig:partitions}); розміри партицій відрізняються на чотири порядки: від 83,4 КБ («порушено справу про банкрутство (санація)») до 773,4 МБ («зареєстровано»).
+
+\addshot{partitions.png}{Піддиректорії партицій таблиці uo\_part у HDFS}{fig:partitions}
+
+Для порівняння продуктивності виконано запит з фільтром за ключем партиціювання (лістинг~\ref{lst:stan}) до трьох таблиць; результати наведено на рис.~\ref{fig:partition-compare}.
+
+\begin{lstlisting}[language=HiveQL, caption={Запит з фільтром за станом юридичної особи}, label={lst:stan}]
+SELECT
+    COUNT(*) AS companies
+
+FROM
+    uo_part
+
+WHERE 1=1
+    AND stan = 'порушено справу про банкрутство'
+\end{lstlisting}
+
+\addshot{partition-compare.png}{Час виконання та обсяг прочитаних даних для запиту за stan}{fig:partition-compare}
+
+\subsection{Бакетинг}
+
+Таблицю \texttt{uo\_bucket} розподілено на 10 бакетів за кодом ЄДРПОУ (лістинги~\ref{lst:bucket},~\ref{lst:bucket-insert}). Параметр \texttt{hive.enforce.bucketing}, вказаний у завданні, не використовується: у Hive~2.0 його вилучено, і запис у таблицю з бакетами завжди розподіляє рядки за хешем. Властивість \texttt{bucketing\_version = 1} обрано свідомо: у Hive~3 за замовчуванням використовується версія~2 (хеш Murmur3), але \texttt{TABLESAMPLE} на рушії MapReduce обчислює бакет старою хеш-функцією й для таблиць версії~2 повертає порожній результат.
+
+\begin{lstlisting}[language=HiveQL, caption={Створення таблиці з бакетами uo\_bucket}, label={lst:bucket}]
+DROP TABLE IF EXISTS uo_bucket;
+
+CREATE TABLE uo_bucket (
+    name     STRING,
+    edrpou   STRING,
+    address  STRING,
+    boss     STRING,
+    founders STRING,
+    kved     STRING,
+    stan     STRING
+)
+CLUSTERED BY (edrpou) INTO 10 BUCKETS
+STORED AS TEXTFILE
+TBLPROPERTIES ("bucketing_version" = "1")
+\end{lstlisting}
+
+\begin{lstlisting}[language=HiveQL, caption={Наповнення таблиці uo\_bucket}, label={lst:bucket-insert}]
+INSERT INTO TABLE uo_bucket
+SELECT
+    name,
+    edrpou,
+    address,
+    boss,
+    founders,
+    kved,
+    stan
+
+FROM
+    uo_table
+\end{lstlisting}
+
+Наповнення тривало 75~с. Кожен бакет -- окремий файл \texttt{00000N\_0} (рис.~\ref{fig:bucket-files}); розміри файлів майже однакові (110,0--113,2 МБ), тобто хеш розподіляє унікальні коди рівномірно. Директорія \texttt{.hive-staging\_*} -- тимчасова директорія запиту, яку Hive видаляє після закриття сесії; при читанні таблиці вона ігнорується.
+
+\addshot{bucket-files.png}{Файли бакетів таблиці uo\_bucket у HDFS}{fig:bucket-files}
+
+Точковий запит за кодом ЄДРПОУ (лістинг~\ref{lst:point}) виконано до трьох таблиць (рис.~\ref{fig:point-compare}).
+
+\begin{lstlisting}[language=HiveQL, caption={Точковий запит за кодом ЄДРПОУ}, label={lst:point}]
+SELECT
+    name,
+    edrpou,
+    stan
+
+FROM
+    uo_bucket
+
+WHERE 1=1
+    AND edrpou = '00223941'
+\end{lstlisting}
+
+\addshot{point-compare.png}{Час виконання та обсяг прочитаних даних для точкового запиту}{fig:point-compare}
+
+Віртуальна колонка \texttt{INPUT\_\_FILE\_\_NAME} показує файл, з якого прочитано запис (рис.~\ref{fig:bucket-file}): \texttt{000005\_0}, тобто бакет~6.
+
+\addshot{bucket-file-name.png}{Файл бакета, що містить шуканий запис}{fig:bucket-file}
+
+Конструкція \texttt{TABLESAMPLE} (лістинг~\ref{lst:sample}) обчислює хеш \texttt{edrpou} для кожного рядка і повертає лише рядки бакета~6. Запис повернуто (рис.~\ref{fig:tablesample}), тобто обчислений бакет збігся з файлом, у який Hive записав його під час вставки. Проте обсяг прочитаних даних не зменшився.
+
+\begin{lstlisting}[language=HiveQL, caption={Вибірка одного бакета}, label={lst:sample}]
+SELECT
+    name,
+    edrpou,
+    stan
+
+FROM
+    uo_bucket TABLESAMPLE(BUCKET 6 OUT OF 10 ON edrpou)
+
+WHERE 1=1
+    AND edrpou = '00223941'
+\end{lstlisting}
+
+\addshot{tablesample.png}{Результат і час виконання запиту з TABLESAMPLE}{fig:tablesample}
+
+\subsection{Задача WordCount}
+
+Файл логів HDFS завантажено в директорію \texttt{/wordcount/input} (рис.~\ref{fig:wc-input}).
+
+\addshot{wordcount-input.png}{Вхідні дані задачі WordCount у HDFS}{fig:wc-input}
+
+Задачу запущено утилітою \texttt{hadoop jar} з бібліотекою прикладів Hadoop~3.1.3 тричі -- з 1, 2 та 4 редюсерами, кожного разу в нову вихідну директорію (лістинг~\ref{lst:wordcount}).
+
+\begin{lstlisting}[language=bash, caption={Запуск задачі WordCount з двома редюсерами}, label={lst:wordcount}]
+hadoop jar /opt/hadoop-3.1.3/share/hadoop/mapreduce/hadoop-mapreduce-examples-3.1.3.jar \
+    wordcount -D mapreduce.job.reduces=2 /wordcount/input /wordcount/output-r2
+\end{lstlisting}
+
+Журнал виконання задачі з двома редюсерами наведено на рис.~\ref{fig:wc-job}, основні лічильники -- у табл.~\ref{tab:wc-counters}. Вхідний файл розбито на 12 сплітів -- по одному на блок HDFS, тому запущено 12 map-задач; задача завершилася за $\approx 62$~с.
+
+\addshot{wordcount-job.png}{Журнал виконання задачі WordCount з двома редюсерами}{fig:wc-job}
+
+\begin{table}[H]
+  \caption{Лічильники задачі WordCount (2 редюсери)}\label{tab:wc-counters}
+  \begin{tabularx}{\textwidth}{|Y|r|}
+    \hline
+    Лічильник & Значення \\
+    \hline
+    Запущено map-задач / reduce-задач & 12 / 2 \\
+    Вхідних рядків (Map input records) & 11\,175\,629 \\
+    Пар (слово, 1) на виході map (Map output records) & 138\,554\,843 \\
+    Пар після combiner (Combine output records) & 9\,620\,068 \\
+    Пар на вході reduce (Reduce input records) & 4\,375\,266 \\
+    Різних слів на виході (Reduce output records) & 3\,585\,666 \\
+    Прочитано з HDFS, байт & 1\,578\,029\,282 \\
+    Записано в HDFS, байт & 140\,118\,458 \\
+    \hline
+  \end{tabularx}
+\end{table}
+
+Вміст вихідних директорій для різної кількості редюсерів показано на рис.~\ref{fig:wc-outputs}: кожен редюсер записує власний файл \texttt{part-r-0000N}, а порожній файл \texttt{\_SUCCESS} позначає успішне завершення задачі.
+
+\addshot{wordcount-outputs.png}{Вихідні файли задачі WordCount для 1, 2 та 4 редюсерів}{fig:wc-outputs}
+
+% ============================================================================================
+\section{Аналіз результатів порівняння часу виконання запитів}
+
+Зведені результати вимірювань наведено в табл.~\ref{tab:compare}. Час -- медіана трьох запусків, обсяг прочитаних даних -- лічильник \texttt{HDFS Read} задач MapReduce.
+
+\begin{table}[H]
+  \caption{Порівняння звичайних та оптимізованих таблиць}\label{tab:compare}
+  \begin{tabularx}{\textwidth}{|Y|l|r|r|}
+    \hline
+    Запит & Таблиця & Час, с & Прочитано, МБ \\
+    \hline
+    \multirow{3}{=}{Фільтр за stan (партиціювання)} & uo\_table & 30,08 & 1144,6 \\
+     & uo\_plain & 25,32 & 1115,9 \\
+     & uo\_part & 23,92 & 1,0 \\
+    \hline
+    \multirow{4}{=}{Точковий запит за edrpou (бакетинг)} & uo\_table & 26,95 & 1144,5 \\
+     & uo\_plain & 22,90 & 1115,9 \\
+     & uo\_bucket & 22,05 & 1115,9 \\
+     & uo\_bucket, TABLESAMPLE & 22,89 & 1115,9 \\
+    \hline
+  \end{tabularx}
+\end{table}
+
+\textbf{Hive та PostgreSQL.} Підрахунок записів у Hive триває 28--37~с проти 0,15--0,29~с у PostgreSQL, хоча обидві системи читають усі дані (PostgreSQL виконує паралельне послідовне сканування таблиці, а не бере кількість з метаданих). Різниця зумовлена накладними витратами MapReduce: кожен запит Hive -- це задача YARN, для якої виділяються контейнери, запускаються JVM map- і reduce-задач, а результат записується в HDFS. Ці витрати становлять $\approx 20$~с незалежно від обсягу даних. На $\approx 3$~ГБ, що вміщуються в пам'ять одного сервера, реляційна СКБД значно ефективніша; Hive виправданий на обсягах, які неможливо обробити на одній машині.
+
+\textbf{Формат зберігання.} Таблиця \texttt{uo\_table} стабільно повільніша за \texttt{uo\_plain} на 4--5~с за майже однакового обсягу даних: \texttt{OpenCSVSerde} розбирає лапки, екрановані символи та коми всередині полів, тоді як стандартний текстовий формат Hive лише розділяє рядок за службовим символом.
+
+\textbf{Партиціювання.} Запит до \texttt{uo\_part} з фільтром за ключем партиціювання читає лише одну піддиректорію -- 1,0 МБ замість 1,1 ГБ, тобто в 1100 разів менше даних (partition pruning: Hive визначає потрібні партиції за метаданими ще до запуску задачі). Проте час скорочується лише на 1,4~с порівняно з \texttt{uo\_plain}, бо його основну частину становлять фіксовані витрати на запуск задачі MapReduce. На більших даних виграш зростає пропорційно обсягу пропущених партицій.
+
+\textbf{Бакетинг.} Точковий запит до \texttt{uo\_bucket} виконується так само, як до \texttt{uo\_plain}: обидва читають 1,1 ГБ, а різниця в межах розкиду вимірювань. На рушії MapReduce Hive~3.1.3 не відсікає бакети ні за умовою \texttt{WHERE} (bucket pruning реалізовано лише для рушія Tez), ні в \texttt{TABLESAMPLE}, який читає всі файли й відбирає рядки за хешем. Бакетинг дає переваги в інших сценаріях: з'єднання таблиць, розбитих на бакети за ключем з'єднання (bucket map join, sort-merge-bucket join), без повного перерозподілу даних; вибірки для аналізу; рівномірний розподіл даних за колонкою з великою кількістю значень, де партиціювання створило б мільйони дрібних директорій.
+
+% ============================================================================================
+\section{Аналіз розподілу слів між вихідними файлами}
+
+Розподіл слів між файлами \texttt{part-r-*} для різної кількості редюсерів наведено на рис.~\ref{fig:wc-distribution} і в табл.~\ref{tab:wc-distribution}.
+
+\addshot{wordcount-distribution.png}{Кількість різних слів і входжень у кожному вихідному файлі}{fig:wc-distribution}
+
+\begin{table}[H]
+  \caption{Розподіл слів між вихідними файлами}\label{tab:wc-distribution}
+  \begin{tabularx}{\textwidth}{|l|X|r|r|r|}
+    \hline
+    Редюсерів & Файл & Різних слів & Частка, \% & Входжень \\
+    \hline
+    1 & part-r-00000 & 3\,585\,666 & 100,0 & 138\,554\,843 \\
+    \hline
+    \multirow{2}{*}{2} & part-r-00000 & 1\,791\,230 & 50,0 & 68\,658\,022 \\
+     & part-r-00001 & 1\,794\,436 & 50,0 & 69\,896\,821 \\
+    \hline
+    \multirow{4}{*}{4} & part-r-00000 & 895\,736 & 25,0 & 38\,982\,586 \\
+     & part-r-00001 & 892\,027 & 24,9 & 30\,076\,772 \\
+     & part-r-00002 & 895\,494 & 25,0 & 29\,675\,436 \\
+     & part-r-00003 & 902\,409 & 25,2 & 39\,820\,049 \\
+    \hline
+  \end{tabularx}
+\end{table}
+
+Ключ потрапляє до редюсера з номером $\bigl(\operatorname{hash}(\mathit{key}) \mathbin{\&} \texttt{Integer.MAX\_VALUE}\bigr) \bmod R$, де $R$ -- кількість редюсерів (\texttt{HashPartitioner}). З цього випливають такі властивості розподілу.
+\begin{enumerate}
+  \item Кожне слово потрапляє рівно в один файл: для всіх трьох запусків жодне слово не повторюється між файлами, а загальні кількості різних слів (3\,585\,666) і входжень (138\,554\,843) однакові (рис.~\ref{fig:wc-totals}). Результат не залежить від кількості редюсерів, змінюється лише його розбиття на файли.
+  \item Файли майже рівні за кількістю різних слів (50/50 при двох редюсерах, $25\,\% \pm 0{,}2\,\%$ при чотирьох), бо хеш рівномірно розподіляє велику кількість ключів.
+  \item За кількістю входжень файли нерівні: при чотирьох редюсерах -- від 29,7 до 39,8 млн. Розподіляються ключі, а не їхня частота, тому часті слова зосереджують велику кількість входжень в одному файлі. Наприклад, слово \texttt{INFO} (10,8 млн входжень, рис.~\ref{fig:wc-top}) повністю належить одному редюсеру. На даних з сильною асиметрією частот це призводить до нерівномірного навантаження редюсерів.
+  \item Усередині кожного файлу слова відсортовані (рис.~\ref{fig:wc-heads}): на етапі shuffle and sort кожен редюсер отримує свої ключі впорядкованими. Між файлами порядку немає -- сусідні в алфавітному порядку слова опиняються в різних файлах.
+\end{enumerate}
+
+\addshot{wordcount-totals.png}{Перевірка цілісності результатів для різної кількості редюсерів}{fig:wc-totals}
+
+\addshot{wordcount-heads.png}{Початок кожного вихідного файлу (2 редюсери)}{fig:wc-heads}
+
+\addshot{wordcount-top.png}{Найчастіші слова в логах HDFS}{fig:wc-top}
+
+Combiner (локальна агрегація на стороні map) зменшує обсяг даних для shuffle: замість 138,6 млн пар (слово, 1) до редюсерів надходить 4,4 млн пар (табл.~\ref{tab:wc-counters}). Збільшення кількості редюсерів розпаралелює фазу reduce і зменшує розмір кожного вихідного файлу (140 МБ при одному редюсері, $\approx 70$ МБ при двох, $\approx 35$ МБ при чотирьох), але не зменшує загальний обсяг роботи. Стандартний WordCount розбиває текст лише за пробілами, тому до «слів» належать і числа, ідентифікатори блоків та IP-адреси з портами (наприклад, \texttt{/10.250.10.100:32771}); саме вони утворюють більшість із 3,59 млн різних слів.
+
+% ============================================================================================
+\anonsection{Висновки}
+
+У роботі розгорнуто кластер Hadoop~3.1.3 та Hive~3.1.3 у Docker і виконано повний цикл обробки даних Єдиного державного реєстру: завантаження в HDFS, створення таблиць, аналітичні запити, оптимізацію зберігання та задачу MapReduce.
+
+Робота з HDFS показала блокову організацію файлової системи: файл UO.csv розміром 1,2 ГБ зберігається у 9 блоках по 128 МБ, метадані про які містить NameNode, а самі блоки -- DataNode.
+
+Зовнішні таблиці Hive з \texttt{OpenCSVSerde} дозволили виконувати SQL-запити до CSV-файлів без їх копіювання. Віконна функція \texttt{ROW\_NUMBER()} виявила адреси масової реєстрації (найбільша -- Київ, вул. Мельникова, 12, з 2187 юридичними особами), а з'єднання за адресою -- 122\,917 адрес, спільних для юридичних осіб і ФОП, серед яких багато неповних адрес.
+
+Порівняння з PostgreSQL показало, що на даних обсягом $\approx 3$~ГБ Hive на MapReduce повільніший на два порядки (28--37~с проти 0,15--0,29~с) через фіксовані накладні витрати на запуск задачі $\approx 20$~с; переваги Hive проявляються на даних, що не вміщуються на одну машину.
+
+Партиціювання скоротило обсяг прочитаних даних у 1100 разів (1,0 МБ замість 1,1 ГБ) для запитів з фільтром за ключем партиціювання, хоча час через накладні витрати MapReduce змінився мало. Бакетинг рівномірно розподілив дані на 10 файлів, але не прискорив точкові запити: Hive~3.1.3 на MapReduce не відсікає бакети. Його переваги реалізуються в з'єднаннях за ключем бакетування та в рушії Tez.
+
+Задача WordCount на 1,5 ГБ логів HDFS виконалася 12 map-задачами (по одній на блок), а combiner скоротив обсяг даних для shuffle з 138,6 до 4,4 млн пар. Слова розподіляються між редюсерами за хешем ключа: кожне слово потрапляє рівно в один файл, файли рівні за кількістю різних слів, але не за кількістю входжень, а підсумковий результат не залежить від кількості редюсерів.
+
+\printbibliography[heading=bibintoc, title={Список використаних джерел}]
+
+% ============================================================================================
+\clearpage
+\anonsection{Додаток А. Програмний код}
+
+Повний програмний код лабораторної роботи розміщено в репозиторії \url{https://github.com/nuinashco/iasa-bigdata}, директорія \texttt{labs/001-hadoop-and-hive}:
+\begin{itemize}
+  \item \texttt{draft.ipynb} -- ноутбук Jupyter з усіма кроками роботи та результатами виконання;
+  \item \texttt{scripts/download\_data.py} -- завантаження та перетворення даних реєстру (додаток~Б);
+  \item \texttt{src/lab001} -- допоміжні модулі для керування кластером, виконання команд Hadoop та запитів до Hive і PostgreSQL;
+  \item \texttt{infra} -- конфігурація кластера (Docker Compose, налаштування Hadoop і Hive).
+\end{itemize}
+
+Ноутбук відтворює роботу повністю: запуск «Run All» розгортає кластер, завантажує дані та виконує всі запити ($\approx 35$~хв).
+
+\anonsection{Додаток Б. Скрипт завантаження даних}
+
+\setcounter{lstlisting}{0}
+\renewcommand{\thelstlisting}{Б.\arabic{lstlisting}}
+\lstinputlisting[language=Python, caption={Скрипт download\_data.py}, label={lst:download}]{../scripts/download_data.py}
+
+\end{document}
