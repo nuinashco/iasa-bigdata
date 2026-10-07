@@ -33,6 +33,7 @@ container at that cluster instead of running it standalone.
 | `nodemanager` | `bde2020/hadoop-nodemanager:2.0.0-hadoop3.1.3-java8` | YARN NodeManager: actually runs Map/Reduce task containers |
 | `historyserver` | `bde2020/hadoop-historyserver:2.0.0-hadoop3.1.3-java8` | MapReduce JobHistory server (finished-job UI, needed for report screenshots) |
 | `hive-server` | `apache/hive:3.1.3` | HiveServer2, compiles HiveQL into MapReduce jobs submitted to the cluster above |
+| `postgres` | `postgres:17` | Traditional RDBMS baseline for the `count(*)` timing comparison (task 3.1); loads the same CSVs from `/data` |
 
 All `bde2020/hadoop-*` images are official-Hadoop-tarball wrappers from the
 [big-data-europe/docker-hadoop](https://github.com/big-data-europe/docker-hadoop)
@@ -49,7 +50,7 @@ bucketing, MapReduce stages), not a production topology.
 ## Files in this directory and what reads them
 
 ### `docker-compose.yml`
-Defines the 6 services above, their ports, volumes and startup order. All
+Defines the 7 services above, their ports, volumes and startup order. All
 `bde2020` services share one `env_file: ./hadoop.env`; `hive-server` gets its
 own `environment:` block plus a mounted config directory (see below).
 
@@ -172,7 +173,7 @@ docker compose logs -f hive-server   # watch HiveServer2 startup
 
 # HDFS CLI (task 1)
 docker exec namenode hdfs dfs -mkdir -p /tables_data/UO
-docker exec namenode hdfs dfs -put /path/inside/container/UO.csv /tables_data/UO/
+docker exec namenode hdfs dfs -put -f /data/UO.csv /tables_data/UO/
 
 # Hive (tasks 2-4)
 docker exec -it hive-server beeline -u "jdbc:hive2://localhost:10000/default"
@@ -185,8 +186,10 @@ docker exec nodemanager hadoop jar \
 docker compose down           # stop (add -v to also wipe HDFS/warehouse volumes)
 ```
 
-To get a local CSV file into a container so it can be `hdfs dfs -put` into
-HDFS, use `docker cp local_file.csv namenode:/tmp/` first.
+The lab's `data/` folder (CSVs produced by `scripts/download_data.py`) is
+bind-mounted read-only into `namenode` at `/data`, so files there can be
+`hdfs dfs -put` into HDFS directly. For any other local file, use
+`docker cp local_file.csv namenode:/tmp/` first.
 
 ## Web UIs (from the host)
 
@@ -199,6 +202,12 @@ HDFS, use `docker cp local_file.csv namenode:/tmp/` first.
 | HDFS DataNode | http://localhost:9864 |
 | HiveServer2 | http://localhost:10002 |
 
+Non-UI ports published to the host: `10000` (HiveServer2 JDBC/Thrift) and
+`5432` (PostgreSQL, user/password `postgres`). The NameNode RPC port `9000`
+is deliberately not published: everything reaches it over the Docker network,
+and publishing it can collide with host processes (a Jupyter kernel grabbed it
+once).
+
 ## Resource footprint
 
 Total configured ceiling is well inside this VM's 31GB RAM / 8 cores:
@@ -206,5 +215,5 @@ NodeManager is capped at 8GB RAM / 4 vcores for task containers, plus
 headroom for the JVMs of NameNode, DataNode, ResourceManager, HistoryServer
 and HiveServer2 (a few hundred MB to ~1GB heap each by default). Named
 volumes (`hadoop_namenode`, `hadoop_datanode`, `hadoop_historyserver`,
-`hive_warehouse`) persist HDFS/warehouse data across `docker compose
+`hive_warehouse`, `postgres_data`) persist HDFS/warehouse data across `docker compose
 restart`; `docker compose down -v` deletes them along with all data.
