@@ -10,6 +10,12 @@ resolution-markers = [
     "python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
+[manifest]
+members = [
+    "iasa-bigdata",
+    "lab-001-hadoop-and-hive",
+]
+
 [[package]]
 name = "anyio"
 version = "4.15.1"
@@ -487,22 +493,18 @@ wheels = [
 [[package]]
 name = "iasa-bigdata"
 version = "0.1.0"
-source = { editable = "." }
+source = { virtual = "." }
 dependencies = [
     { name = "ipykernel" },
     { name = "jupyterlab" },
-    { name = "pandas" },
-    { name = "psycopg", extra = ["binary"] },
-    { name = "pyhive", extra = ["hive-pure-sasl"] },
+    { name = "lab-001-hadoop-and-hive" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "ipykernel", specifier = ">=7.4.0" },
     { name = "jupyterlab", specifier = ">=4.6.4" },
-    { name = "pandas", specifier = ">=3.0.6" },
-    { name = "psycopg", extras = ["binary"], specifier = ">=3.3.6" },
-    { name = "pyhive", extras = ["hive-pure-sasl"], specifier = ">=0.7.0" },
+    { name = "lab-001-hadoop-and-hive", editable = "labs/001-hadoop-and-hive" },
 ]
 
 [[package]]
@@ -829,6 +831,23 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/16/c5/08946a10b81bd64408d8b78cb352e17fe52d3ee11c2aef00a0f06e506938/jupyterlab_server-2.28.1.tar.gz", hash = "sha256:0c3c2418d51021ce280916e63dfe4cba8386b4e2787be5c25433c98f560ddb31", size = 78141, upload-time = "2026-09-15T19:22:09.935Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/23/d3/996332fe24f3c2458b9c353b998570dfa2631763e9a8674ba3f94c0877d0/jupyterlab_server-2.28.1-py3-none-any.whl", hash = "sha256:4bd36c7c11d872e15cefa4951e12380a47e6901687165332dd50a007cb367ad9", size = 60197, upload-time = "2026-09-15T19:22:08.201Z" },
+]
+
+[[package]]
+name = "lab-001-hadoop-and-hive"
+version = "0.1.0"
+source = { editable = "labs/001-hadoop-and-hive" }
+dependencies = [
+    { name = "pandas" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "pyhive", extra = ["hive-pure-sasl"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pandas", specifier = ">=3.0.6" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.3.6" },
+    { name = "pyhive", extras = ["hive-pure-sasl"], specifier = ">=0.7.0" },
 ]
 
 [[package]]

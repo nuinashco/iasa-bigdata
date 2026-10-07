@@ -1,0 +1,17 @@
+[project]
+name = "lab-001-hadoop-and-hive"
+version = "0.1.0"
+description = "Lab 1: distributed data processing with Apache Hadoop and Apache Hive"
+requires-python = ">=3.13"
+dependencies = [
+    "pandas>=3.0.6",
+    "psycopg[binary]>=3.3.6",
+    "pyhive[hive-pure-sasl]>=0.7.0",
+]
+
+[tool.uv.build-backend]
+module-name = "lab001"
+
+[build-system]
+requires = ["uv_build>=0.12.17,<0.13.0"]
+build-backend = "uv_build"

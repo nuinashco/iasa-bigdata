@@ -3,7 +3,7 @@ import time
 
 from pyhive import hive
 
-from iasa_bigdata.sqlclient import SqlClient, split_statements
+from lab001.sqlclient import SqlClient, split_statements
 
 __all__ = ["HiveClient", "split_statements"]
 

@@ -4,17 +4,16 @@ version = "0.1.0"
 description = "IASA Masters BigData Course Workbook"
 readme = "README.md"
 requires-python = ">=3.13"
+# Notebook tooling shared by all labs, plus every lab: listing labs here makes a plain `uv sync`
+# at the root install them into the shared .venv (otherwise it removes member packages).
 dependencies = [
     "ipykernel>=7.4.0",
     "jupyterlab>=4.6.4",
-    "pandas>=3.0.6",
-    "psycopg[binary]>=3.3.6",
-    "pyhive[hive-pure-sasl]>=0.7.0",
+    "lab-001-hadoop-and-hive",
 ]
 
-[project.scripts]
-iasa-bigdata = "iasa_bigdata:main"
+[tool.uv.sources]
+lab-001-hadoop-and-hive = { workspace = true }
 
-[build-system]
-requires = ["uv_build>=0.12.17,<0.13.0"]
-build-backend = "uv_build"
+[tool.uv.workspace]
+members = ["labs/*"]

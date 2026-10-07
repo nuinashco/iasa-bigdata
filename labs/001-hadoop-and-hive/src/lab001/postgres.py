@@ -1,6 +1,6 @@
 import psycopg
 
-from iasa_bigdata.sqlclient import SqlClient
+from lab001.sqlclient import SqlClient
 
 
 class PostgresClient(SqlClient):
