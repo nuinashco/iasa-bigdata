@@ -4,7 +4,13 @@ version = "0.1.0"
 description = "IASA Masters BigData Course Workbook"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "ipykernel>=7.4.0",
+    "jupyterlab>=4.6.4",
+    "pandas>=3.0.6",
+    "psycopg[binary]>=3.3.6",
+    "pyhive[hive-pure-sasl]>=0.7.0",
+]
 
 [project.scripts]
 iasa-bigdata = "iasa_bigdata:main"
