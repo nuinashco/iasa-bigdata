@@ -1,42 +1,42 @@
-# iasa-bigdata
+# IASA Master's — Big Data Processing
 
-Labs for «Обробка надвеликих масивів даних» (KPI, IASA). Each lab lives in `labs/<NNN-name>/`
-as a uv workspace member with its notebook, infrastructure and report.
+Labs for «Обробка надвеликих масивів даних» (KPI, IASA): Jupyter notebooks running on local Docker clusters, with LaTeX reports.
 
-## Setup
+| Lab | Topic |
+|---|---|
+| [001](labs/001-hadoop-and-hive) | Distributed data processing in Apache Hadoop and Apache Hive |
 
-```bash
-uv sync    # shared .venv with every lab and the notebook tooling
-```
+## Installation and Usage
 
-## Reports
+### 1. Install uv and necessary tools
 
-LaTeX reports are built in Docker (XeLaTeX, biber, Times New Roman), so only Docker is needed:
-
-```bash
-latex/build.sh labs/001-hadoop-and-hive/report/report.tex   # -> report.pdf next to the .tex
-```
-
-The first run builds the `iasa-latex` image (~3 min, ~1 GB). Shared formatting (KPI
-requirements, title page) is in `latex/iasa-lab.cls`; a report sets only its own data:
-
-```latex
-\documentclass{iasa-lab}
-\labnumber{1}
-\topic{...}
-\student{...}
-\studentgroup{...}
-```
-
-Figures are screenshots of notebook outputs, listed per lab in `report/screenshots.toml`:
+Install `uv`:
 
 ```bash
-uv run .claude/skills/lab-report/scripts/nb_screenshots.py labs/001-hadoop-and-hive/draft.ipynb \
-    labs/001-hadoop-and-hive/report/screenshots.toml labs/001-hadoop-and-hive/report/assets
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-It uses the system Chromium if installed (`sudo apt install chromium`), otherwise Playwright's
-(`uv run --with playwright playwright install chromium`).
+For alternatives, see [Installing uv](https://docs.astral.sh/uv/getting-started/installation/).
 
-For Claude Code, the `lab-report` skill (`.claude/skills/lab-report/`) describes the whole
-workflow: `task.pdf` + executed `draft.ipynb` → screenshots → `report.tex` → verified PDF.
+Install [Docker Engine](https://docs.docker.com/engine/install/) with the Compose plugin: labs run their clusters in Docker, and reports are built in a Docker image.
+
+### 2. Create and activate the virtual environment
+
+```bash
+uv sync
+source .venv/bin/activate
+```
+
+### 3. Run a lab
+
+Open `labs/<lab>/draft.ipynb` with the `.venv` kernel and run all cells. The notebook starts the lab's cluster (`labs/<lab>/infra/`), downloads the data and runs every task.
+
+### 4. Build a report
+
+```bash
+latex/build.sh labs/001-hadoop-and-hive/report/report.tex
+```
+
+The PDF is written next to `report.tex`. The first build creates the `iasa-latex` Docker image (~3 min).
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the repository layout, adding a lab and report conventions.
