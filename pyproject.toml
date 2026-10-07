@@ -4,12 +4,15 @@ version = "0.1.0"
 description = "IASA Masters BigData Course Workbook"
 readme = "README.md"
 requires-python = ">=3.13"
-# Notebook tooling shared by all labs, plus every lab: listing labs here makes a plain `uv sync`
-# at the root install them into the shared .venv (otherwise it removes member packages).
+
 dependencies = [
+    "lab-001-hadoop-and-hive",
+]
+
+[dependency-groups]
+dev = [
     "ipykernel>=7.4.0",
     "jupyterlab>=4.6.4",
-    "lab-001-hadoop-and-hive",
 ]
 
 [tool.uv.sources]
