@@ -1,0 +1,92 @@
+# Screenshots of draft.ipynb outputs used as figures in report.tex.
+# Regenerate: uv run .claude/skills/lab-report/scripts/nb_screenshots.py labs/001-hadoop-and-hive/draft.ipynb \
+#     labs/001-hadoop-and-hive/report/screenshots.toml labs/001-hadoop-and-hive/report/assets
+
+width = 820
+
+[shots.cluster-ps]
+cells = ['compose_up(COMPOSE_FILE)']
+
+[shots.download]
+cells = ['run([sys.executable, "scripts/download_data.py"]);']
+
+[shots.hdfs-put-ls]
+cells = ['hdfs("dfs", "-mkdir", "-p", "/tables_data/UO", "/tables_data/FOP");', 'hdfs("dfs", "-put", "-f", "/data/UO.csv", "/tables_data/UO/")', 'hdfs("dfs", "-ls", "-h", "/tables_data/UO", "/tables_data/FOP");']
+
+[shots.hdfs-fsck]
+cells = ['hdfs("fsck", "/tables_data/UO/UO.csv", "-files", "-blocks");']
+max_height = 380
+
+[shots.uo-preview]
+cells = ["uo_table\n\nLIMIT 10"]
+width = 1000
+
+[shots.fop-preview]
+cells = ["FROM\n    fop_table"]
+width = 1000
+
+[shots.describe-uo]
+cells = ['hive.sql("DESCRIBE FORMATTED uo_table").fillna("")']
+max_height = 1100
+
+[shots.pg-load]
+cells = ['pg.sql(r"""']
+
+[shots.count-compare]
+cells = ['"rows": [']
+
+[shots.mass-registration]
+cells = ['GROUP BY address']
+width = 1000
+
+[shots.top-address]
+cells = ['ORDER BY rn']
+width = 1000
+
+[shots.join-summary]
+cells = ['COUNT(DISTINCT u.address) AS shared_addresses,']
+
+[shots.join-top]
+cells = ['u.address,']
+width = 1000
+
+[shots.partitions]
+cells = ['hdfs("dfs", "-ls", "-d", "/user/hive/warehouse/uo_part/stan=*")']
+
+[shots.partition-compare]
+cells = ['STAN_QUERY = r"""']
+
+[shots.bucket-files]
+cells = ['hdfs("dfs", "-ls", "-h", "/user/hive/warehouse/uo_bucket");']
+
+[shots.point-compare]
+cells = ['point_timings = compare(']
+
+[shots.bucket-file-name]
+cells = ['INPUT__FILE__NAME AS file,']
+
+[shots.tablesample]
+cells = ['SAMPLE_QUERY = rf"""']
+
+[shots.wordcount-input]
+cells = ['archive.unlink()']
+
+[shots.wordcount-job]
+cells = ['hadoop(']
+width = 1000
+max_height = 640
+
+[shots.wordcount-outputs]
+cells = ['hdfs("dfs", "-ls", f"/wordcount/output-r{reducers}")']
+
+[shots.wordcount-distribution]
+cells = ['rows = []']
+
+[shots.wordcount-totals]
+cells = ['reducers: {']
+
+[shots.wordcount-heads]
+cells = ['results[2].groupby("part").head(8)']
+
+[shots.wordcount-top]
+cells = ['results[2].nlargest(15, "count").reset_index(drop=True)']

@@ -1,0 +1,133 @@
+# Hadoop 3.1.3 (HDFS + YARN) + Hive 3.1.3 (HiveServer2, embedded Derby metastore)
+# for labs/001-hadoop-and-hive. Single datanode/nodemanager -> dfs.replication=1.
+# Hive is wired to the real HDFS/YARN cluster (not local/standalone mode) via
+# hive-conf/*-site.xml mounted as HIVE_CUSTOM_CONF_DIR. Plus PostgreSQL as an RDBMS baseline.
+
+services:
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.1.3-java8
+    container_name: namenode
+    restart: always
+    ports:
+      - "9870:9870" # HDFS web UI
+    volumes:
+      - hadoop_namenode:/hadoop/dfs/name
+      - ../data:/data:ro # lab CSVs, source for `hdfs dfs -put /data/...`
+    environment:
+      - CLUSTER_NAME=iasa-bigdata
+    env_file:
+      - ./hadoop.env
+
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.1.3-java8
+    container_name: datanode
+    restart: always
+    volumes:
+      - hadoop_datanode:/hadoop/dfs/data
+    environment:
+      SERVICE_PRECONDITION: "namenode:9870"
+    env_file:
+      - ./hadoop.env
+    ports:
+      - "9864:9864" # DataNode web UI
+
+  resourcemanager:
+    image: bde2020/hadoop-resourcemanager:2.0.0-hadoop3.1.3-java8
+    container_name: resourcemanager
+    restart: always
+    environment:
+      SERVICE_PRECONDITION: "namenode:9000 namenode:9870 datanode:9864"
+    env_file:
+      - ./hadoop.env
+    ports:
+      - "8088:8088" # YARN web UI
+
+  nodemanager:
+    image: bde2020/hadoop-nodemanager:2.0.0-hadoop3.1.3-java8
+    container_name: nodemanager
+    restart: always
+    environment:
+      SERVICE_PRECONDITION: "namenode:9000 namenode:9870 datanode:9864 resourcemanager:8088"
+    env_file:
+      - ./hadoop.env
+    ports:
+      - "8042:8042" # NodeManager web UI
+
+  historyserver:
+    image: bde2020/hadoop-historyserver:2.0.0-hadoop3.1.3-java8
+    container_name: historyserver
+    restart: always
+    environment:
+      SERVICE_PRECONDITION: "namenode:9000 namenode:9870 datanode:9864 resourcemanager:8088"
+    volumes:
+      - hadoop_historyserver:/hadoop/yarn/timeline
+    env_file:
+      - ./hadoop.env
+    ports:
+      - "8188:8188" # MapReduce JobHistory web UI
+
+  hive-server:
+    image: apache/hive:3.1.3
+    container_name: hive-server
+    restart: always
+    depends_on:
+      - namenode
+      - datanode
+      - resourcemanager
+      - nodemanager
+    # apache/hive's own entrypoint has no readiness wait, unlike the bde2020
+    # images, so wait for HDFS/YARN ports (via bash's /dev/tcp) before handing
+    # off to it -- HiveServer2 creates its HDFS scratch dir on startup.
+    entrypoint:
+      - bash
+      - -c
+      - |
+        for target in namenode:9000 resourcemanager:8088; do
+          host="$${target%:*}"; port="$${target#*:}"
+          until (echo > "/dev/tcp/$${host}/$${port}") >/dev/null 2>&1; do
+            echo "waiting for $${target}..."
+            sleep 2
+          done
+        done
+        exec /entrypoint.sh
+    environment:
+      SERVICE_NAME: hiveserver2
+      HIVE_CUSTOM_CONF_DIR: /hive_custom_conf
+      IS_RESUME: "false"
+      # entrypoint.sh unconditionally prepends $TEZ_HOME/* to HADOOP_CLASSPATH
+      # for hiveserver2; those Tez-bundled Hadoop classes collide with the
+      # Hadoop 3.1.0 mapreduce client when hive.execution.engine=mr (NoSuchFieldError
+      # on MRJobConfig.DEFAULT_MR_AM_ADMIN_USER_ENV). Point TEZ_HOME at a
+      # nonexistent path so that glob resolves to nothing and the conflict disappears.
+      TEZ_HOME: /opt/tez_disabled
+    volumes:
+      - ./hive-conf:/hive_custom_conf
+      - hive_warehouse:/opt/hive/data/warehouse
+    ports:
+      - "10000:10000" # HiveServer2 JDBC/Thrift
+      - "10002:10002" # HiveServer2 web UI
+
+  # Traditional RDBMS baseline for the count(*) comparison (task 3.1); loads the same CSVs.
+  postgres:
+    image: postgres:17
+    container_name: postgres
+    restart: always
+    environment:
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../data:/data:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  hadoop_namenode:
+  hadoop_datanode:
+  hadoop_historyserver:
+  hive_warehouse:
+  postgres_data:
