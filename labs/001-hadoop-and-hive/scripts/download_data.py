@@ -9,7 +9,9 @@ Output (UTF-8, comma-separated, every field quoted, header row):
     data/FOP.csv  fio, address, kved, stan
 
 Usage:
-    python labs/001-hadoop-and-hive/scripts/download_data.py [--data-dir DIR]
+    python labs/001-hadoop-and-hive/scripts/download_data.py [--data-dir DIR] [--force]
+
+Does nothing if both CSVs already exist, unless --force is given.
 """
 
 import argparse
@@ -117,7 +119,13 @@ def convert(archive: Path, member: str, out_path: Path, columns: list[tuple[str,
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
+    parser.add_argument("--force", action="store_true", help="re-download and re-convert even if CSVs exist")
     args = parser.parse_args()
+
+    outputs = [args.data_dir / out_name for out_name, _ in TABLES.values()]
+    if not args.force and all(p.exists() for p in outputs):
+        print(f"[skip] {', '.join(p.name for p in outputs)} already in {args.data_dir} (use --force to rebuild)")
+        return
 
     raw_dir = args.data_dir / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
