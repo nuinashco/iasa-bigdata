@@ -17,12 +17,17 @@ Work on what the user names: files, directories, a diff, a branch. If they name 
 
 If files in scope are open in an editor (notebooks especially), edits on disk can conflict with unsaved editor state; mention it before writing.
 
+Before editing, copy every in-scope file to a snapshot directory in your scratch space (keeping relative paths). Step 5 compares against it: untracked, staged or partly edited files have no reliable git baseline, and `HEAD` can move while you work if the user commits.
+
 ### 2. Learn the project's conventions first
 
 Existing conventions beat general rules: a consistent codebase reads better than one following a style guide piecemeal. Check:
+- the user's own uncommitted or recent comment edits (`git diff HEAD`, recent commits): what they deleted or trimmed by hand shows what they consider noise, and is the strongest signal there is. Don't undo it, even where `references/rules.md` would say otherwise;
 - `CLAUDE.md`, `CONTRIBUTING.md` and saved memories for comment rules (language of comments, what may be commented);
 - linter config (`pyproject.toml`, `ruff.toml`, `.eslintrc`): pydocstyle / ruff `D` rules mean docstrings are required, so improve them instead of deleting;
 - the docstring style already used (Google, NumPy, Sphinx) and the mood (imperative vs descriptive): match it, don't convert.
+
+When a project convention conflicts with a general rule (e.g. the user removed a docstring summary line that PEP 257 asks for, because it only paraphrased the name), the convention wins: leave the code as the user has it and mention the conflict in the report rather than "fixing" it.
 
 ### 3. Decide per comment
 
@@ -31,6 +36,8 @@ Read each comment together with the code around it, then classify it with the ta
 - **REWRITE**: says *what* where a *why* exists, contradicts the code, too long, unclear what it refers to, malformed docstring or TODO. Often only part of a comment is noise: trim to the useful part.
 - **KEEP**: intent and decisions, warnings, workarounds, unidiomatic code someone might "fix", references and credits, units/invariants, cross-file couplings, valid TODOs.
 - **ADD**: public non-trivial APIs without a docstring, magic numbers, hidden couplings, workarounds. Add only what you can establish from the code, git history or an issue; **never invent a rationale**. When the reason isn't knowable, list the spot in the report instead of guessing.
+
+  For small helpers, the test is: would the docstring state something the name and signature can't (side effects, raised errors, merged output streams, units, ordering)? If yes, add exactly that; if it would only paraphrase the name, add nothing.
 
 Never touch machine-read or legal comments: shebangs, encoding lines, licence/SPDX headers, linter and type-checker directives, PEP 723 `# /// script` blocks, Dockerfile parser directives, doctests, generated-file markers (full list: `references/rules.md` §3). When a comment looks like a directive (`tool: …`, `pragma`, `key=value`), treat it as one.
 
@@ -46,11 +53,15 @@ Behaviour must not change, so a comment pass never renames, reorders or reformat
 
 ### 5. Verify that only comments changed
 
+Compare every edited file with its snapshot from step 1:
+
 ```bash
-uv run .claude/skills/clean-comments/scripts/check_comment_only.py --only <files or dirs in scope>
+uv run .claude/skills/clean-comments/scripts/check_comment_only.py SNAPSHOT_FILE CURRENT_FILE
 ```
 
-It compares the working tree with `HEAD` (or `--ref <rev>`): Python files and notebook code cells by AST with docstrings removed, other files line by line with comments stripped. Any `FAIL` means code changed: find and revert that part before reporting. For files the checker can't classify ("unknown file type"), review the diff by eye.
+The checker compares Python files and notebook code cells by AST with docstrings removed, other files line by line with comments stripped. Any `FAIL` means code changed: find and revert that part before reporting. For files the checker can't classify ("unknown file type"), review the diff by eye.
+
+When everything in scope is tracked and was clean before you started, `--only <paths>` (against `HEAD`, or `--ref <rev>`) checks all of them in one call instead.
 
 ### 6. Report
 
