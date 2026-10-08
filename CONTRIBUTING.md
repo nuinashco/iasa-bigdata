@@ -20,6 +20,7 @@ The repository is a [uv workspace](https://docs.astral.sh/uv/concepts/projects/w
     ├── task.pdf                # assignment
     ├── draft.ipynb             # the lab, end to end
     ├── assets/                 # optional diagrams: *.mmd -> *.svg (notebook), *.pdf (report)
+    ├── docs/                   # optional explanations of the lab's tools and concepts
     ├── data/                   # downloaded datasets (git-ignored)
     └── report/                 # report.tex, references.bib, screenshots.toml, assets/
 ```
