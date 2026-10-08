@@ -1,0 +1,92 @@
+# Screenshots of draft.ipynb outputs used as figures in report.tex.
+# Regenerate: uv run .claude/skills/lab-report/scripts/nb_screenshots.py labs/002-spark-graphframes/draft.ipynb \
+#     labs/002-spark-graphframes/report/screenshots.toml labs/002-spark-graphframes/report/assets
+# Spark UI screenshots (spark-*.png) are not produced from the notebook; see report.tex.
+
+width = 820
+
+[shots.cluster-ps]
+cells = ['compose_up(COMPOSE_FILE, DATA_DIR)']
+
+[shots.download]
+cells = ['run([sys.executable, "scripts/download_data.py"]);']
+
+[shots.row-counts]
+cells = ['airports = read("airports-extended.dat", AIRPORTS)']
+
+[shots.routes-preview]
+cells = ['show(routes, 5)']
+
+[shots.route-quality]
+cells = ['COUNT_IF(src_id IS NULL OR dst_id IS NULL) AS without_airport_id,']
+
+[shots.longest-raw]
+cells = ['CREATE OR REPLACE TEMP VIEW route_distances_all AS']
+
+[shots.broken-airport]
+cells = ['BROKEN_AIRPORTS = (5613,)']
+width = 1000
+
+[shots.distance-stats]
+cells = ['CREATE OR REPLACE TEMP VIEW route_distances AS']
+
+[shots.airlines-top]
+cells = ['AIRLINE_TOTALS.format(order="DESC")']
+
+[shots.airlines-bottom]
+cells = ['AIRLINE_TOTALS.format(order="ASC")']
+
+[shots.graph]
+cells = ['g = GraphFrame(vertices, edges)']
+
+[shots.motif-counts]
+cells = ['de_uk = {segments: simple_paths(']
+
+[shots.motif-examples]
+cells = ['show(de_uk[1].orderBy("distance_km"), 10)', 'show(de_uk[2].orderBy("distance_km"), 10)', 'show(de_uk[3].orderBy("distance_km"), 10)']
+
+[shots.transfer-hubs]
+cells = ['.groupBy(F.split("route", " → ")[1].alias("hub"))']
+
+[shots.bfs]
+cells = ['bfs = g.bfs(fromExpr="country']
+
+[shots.bfs-one]
+cells = ['bfs_one = g.bfs(']
+
+[shots.bfs-vs-motifs]
+cells = ['"motifs (1-3 segments)": [']
+
+[shots.txl-edi-counts]
+cells = ['SRC, DST = "TXL", "EDI"']
+
+[shots.txl-edi-extremes]
+cells = ['show(paths.orderBy("distance_km"), 5)', 'show(paths.orderBy(F.desc("distance_km")), 5)']
+
+[shots.pagerank]
+cells = ['ranks = g.pageRank(resetProbability=0.15, maxIter=20).vertices']
+width = 1000
+
+[shots.degree]
+cells = ['vertices.join(degrees, "id")']
+width = 1000
+
+[shots.reset-probability]
+cells = ['top_by_reset = {}']
+
+[shots.components]
+cells = ['components = g.connectedComponents().cache()']
+
+[shots.components-5]
+cells = ['show(component_sizes.filter("count >= 5"))']
+
+[shots.isolated]
+cells = ['isolated = (']
+width = 1000
+
+[shots.lpa-count]
+cells = ['communities = g.labelPropagation(maxIter=5).cache()']
+
+[shots.lpa-summary]
+cells = ['community_summary = (']
+width = 1000
