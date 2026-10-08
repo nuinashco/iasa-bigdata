@@ -31,6 +31,8 @@ def main() -> None:
         if path.exists() and not args.force:
             print(f"[skip] {path.name} already present")
             continue
+        # Download under another name so an interrupted run leaves no truncated file that the
+        # exists() check above would then skip.
         partial = path.with_suffix(".part")
         urllib.request.urlretrieve(f"{BASE_URL}/{name}", partial)
         partial.rename(path)

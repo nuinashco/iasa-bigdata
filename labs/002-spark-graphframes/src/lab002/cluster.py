@@ -5,6 +5,10 @@ from pathlib import Path
 
 
 def run(cmd: list[str], check: bool = True, echo: bool = True, env: dict[str, str] | None = None) -> str:
+    """Run `cmd` and return its stdout with stderr merged in.
+
+    Raises RuntimeError with the tail of the output on a non-zero exit if `check`.
+    """
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                           env={**os.environ, **(env or {})})
     if echo:

@@ -6,14 +6,12 @@ from pyspark.sql import SparkSession
 MASTER_URL = "spark://127.0.0.1:7077"
 # GraphFrames' JVM side; the version must match the graphframes-py package.
 GRAPHFRAMES_PACKAGE = "io.graphframes:graphframes-spark4_2.13:0.12.3"
-# Python 3.13 installed in the cluster image (infra/Dockerfile), matching the driver's version.
+# See infra/Dockerfile.
 WORKER_PYTHON = "/usr/local/bin/python3.13"
 
 
 def spark_session(data_dir: str | Path, app_name: str = "lab002", driver_memory: str = "4g") -> SparkSession:
-    """Session on the Docker cluster with GraphFrames available.
-
-    The driver runs in this process; executors run in the worker containers and, sharing the
+    """The driver runs in this process; executors run in the worker containers and, sharing the
     host network, connect back to it at 127.0.0.1. The checkpoint dir lives in data/, which is
     mounted at the same path in every container (connected components need checkpoints).
     """
@@ -32,7 +30,7 @@ def spark_session(data_dir: str | Path, app_name: str = "lab002", driver_memory:
         # All executors report host 127.0.0.1 (host networking), so Spark would take them for one
         # machine and read each other's shuffle files from disk; those live in another container.
         .config("spark.shuffle.readHostLocalDisk", "false")
-        # Progress bars and INFO/WARN logs would end up in notebook outputs.
+        # Progress bars would end up in notebook outputs (as would INFO/WARN logs: setLogLevel below).
         .config("spark.ui.showConsoleProgress", "false")
         .getOrCreate()
     )

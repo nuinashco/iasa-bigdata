@@ -3,8 +3,6 @@
 # Hive is wired to the real HDFS/YARN cluster (not local/standalone mode) via
 # hive-conf/*-site.xml mounted as HIVE_CUSTOM_CONF_DIR. Plus PostgreSQL as an RDBMS baseline.
 
-# Explicit project name: every lab keeps its compose file in infra/, and the default name
-# (the directory) would make the labs' clusters look like each other's orphan containers.
 name: lab001
 
 services:

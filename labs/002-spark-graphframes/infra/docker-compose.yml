@@ -1,4 +1,3 @@
-# Spark 4.0.4 standalone cluster (1 master, 2 workers) for labs/002-spark-graphframes.
 # The driver is the notebook kernel on the host. Host networking lets executors reach it at
 # 127.0.0.1 without publishing the driver's ports; Linux only.
 #
@@ -7,8 +6,6 @@
 #                    so file paths the driver passes to executors resolve on every node
 #   LAB_UID/LAB_GID  host user, so checkpoints written into data/ stay owned by that user
 
-# Explicit project name: every lab keeps its compose file in infra/, and the default name
-# (the directory) would make the labs' clusters look like each other's orphan containers.
 name: lab002
 
 x-spark: &spark
