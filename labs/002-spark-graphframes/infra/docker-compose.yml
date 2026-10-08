@@ -1,0 +1,67 @@
+# Spark 4.0.4 standalone cluster (1 master, 2 workers) for labs/002-spark-graphframes.
+# The driver is the notebook kernel on the host. Host networking lets executors reach it at
+# 127.0.0.1 without publishing the driver's ports; Linux only.
+#
+# Required environment (lab002.cluster.compose_up sets it):
+#   LAB_DATA         absolute path of the lab's data/ directory, mounted at the same path,
+#                    so file paths the driver passes to executors resolve on every node
+#   LAB_UID/LAB_GID  host user, so checkpoints written into data/ stay owned by that user
+
+# Explicit project name: every lab keeps its compose file in infra/, and the default name
+# (the directory) would make the labs' clusters look like each other's orphan containers.
+name: lab002
+
+x-spark: &spark
+  build: .
+  image: lab002-spark:4.0.4
+  network_mode: host
+  restart: always
+  user: "${LAB_UID:?}:${LAB_GID:?}"
+  volumes:
+    - ${LAB_DATA:?}:${LAB_DATA:?}
+    # Hadoop's login (inside Spark) needs a passwd entry for the container's uid.
+    - /etc/passwd:/etc/passwd:ro
+    - /etc/group:/etc/group:ro
+
+services:
+  spark-master:
+    <<: *spark
+    container_name: spark-master
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master",
+              "--host", "127.0.0.1", "--port", "7077", "--webui-port", "8080"]
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/127.0.0.1/7077"]
+      interval: 3s
+      retries: 20
+
+  spark-worker-1:
+    <<: *spark
+    container_name: spark-worker-1
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    environment: &worker-env
+      SPARK_WORKER_CORES: "4"
+      SPARK_WORKER_MEMORY: "6g"
+      # The image's work dir belongs to uid 185; workers run as the host user.
+      SPARK_WORKER_DIR: /tmp/spark-worker
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker",
+              "--host", "127.0.0.1", "--webui-port", "8081", "spark://127.0.0.1:7077"]
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/127.0.0.1/8081"]
+      interval: 3s
+      retries: 20
+
+  spark-worker-2:
+    <<: *spark
+    container_name: spark-worker-2
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    environment: *worker-env
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker",
+              "--host", "127.0.0.1", "--webui-port", "8082", "spark://127.0.0.1:7077"]
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/127.0.0.1/8082"]
+      interval: 3s
+      retries: 20
