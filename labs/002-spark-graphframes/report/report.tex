@@ -1,0 +1,669 @@
+% Build: latex/build.sh labs/002-spark-graphframes/report/report.tex
+\documentclass{iasa-lab}
+\addbibresource{references.bib}
+
+\labnumber{2}
+\topic{Робота з графовими структурами}
+\student{Гавлицький Іван}
+\studentgroup{КІ-61мп}
+\variant{3: Німеччина -- Велика Британія}
+
+\begin{document}
+
+\maketitle
+
+\tableofcontents
+\clearpage
+
+% ============================================================================================
+\anonsection{Мета роботи}
+
+Ознайомитися з бібліотеками для обробки графів Spark GraphX та GraphFrames, вивчити основні алгоритми центральності та пошуку шляхів. Набути практичних навичок аналізу зв'язків у великих масивах даних, використовуючи набори даних авіаперевезень OpenFlights. Навчитися виконувати з'єднання даних (Join) для підготовки атрибутів вершин та ребер графа.
+
+% ============================================================================================
+\section{Опис задачі та вхідних даних}
+
+\subsection{Постановка задачі}
+
+Відповідно до завдання необхідно:
+\begin{enumerate}
+  \item завантажити дані OpenFlights у DataFrame, з'єднанням (Join) додати до маршрутів координати аеропортів, обчислити відстань кожного рейсу за формулою гаверсинуса та знайти авіакомпанії з найбільшою і найменшою сумарною довжиною рейсів;
+  \item побудувати в Spark GraphFrames граф (вершини -- аеропорти, ребра -- рейси) і знайти всі маршрути між країнами варіанта з не більше ніж двома пересадками (до трьох сегментів), використавши пошук мотивів і BFS, та порівняти їх за результатами і складністю реалізації;
+  \item знайти найкоротший і найдовший за фізичною відстанню (км) маршрут між двома аеропортами країн варіанта з не більше ніж трьома пересадками;
+  \item знайти алгоритмом PageRank 5 найвпливовіших аеропортів, порівняти їх з найбільшими хабами світу та проаналізувати вплив параметра \texttt{resetProbability};
+  \item виділити кластери аеропортів (Connected Components або Label Propagation), проаналізувати кластери з не менше ніж 5 аеропортів і знайти ізольовані підграфи з не менше ніж 2 вузлів.
+\end{enumerate}
+
+Варіант~3 сформульовано як «Німеччина -- Велика Британія». Маршрути в OpenFlights напрямлені, тому в завданні~2 його інтерпретовано як пошук маршрутів в одному напрямку: з аеропортів Німеччини до аеропортів Великої Британії. Зворотний напрямок не обчислювався. Для завдання~3 обрано пару аеропортів цих країн: Берлін-Тегель (TXL) -- Единбург (EDI).
+
+\subsection{Вхідні дані}
+
+Використано відкриті дані проєкту OpenFlights~\cite{openflights}. Файли завантажуються з репозиторію проєкту на GitHub, зафіксованого на одному коміті~\cite{openflights-github}, тому кожен запуск отримує ті самі дані. Структуру файлів наведено в табл.~\ref{tab:data}. Файли не мають рядка заголовка, відсутні значення позначено як \verb|\N|.
+
+\begin{table}[H]
+  \caption{Структура вхідних даних}\label{tab:data}
+  \begin{tabularx}{\textwidth}{|l|r|Y|}
+    \hline
+    Файл & Записів & Основні поля \\
+    \hline
+    airports-extended.dat & 12\,668 & id, name, city, country, iata, icao, latitude, longitude, type \\
+    airlines.dat & 6\,162 & id, name, iata, icao, country, active \\
+    routes.dat & 67\,663 & airline, airline\_id, src, src\_id, dst, dst\_id, codeshare, stops, equipment \\
+    \hline
+  \end{tabularx}
+\end{table}
+
+За описом джерела~\cite{openflights}, база маршрутів відображає стан на червень 2014~року: 67\,663 маршрути між 3\,321 аеропортом. Маршрути напрямлені: якщо авіакомпанія літає з A до B і назад, це два записи. Поле \texttt{codeshare = 'Y'} позначає рейс, який виконує інший перевізник, а продає ця авіакомпанія під своїм кодом. Частоти рейсів, кількість місць і пасажиропотік у даних відсутні: маршрут лише вказує, що авіакомпанія сполучає два аеропорти. Файл \texttt{airports-extended.dat}, на відміну від \texttt{airports.dat}, містить також залізничні станції, поромні термінали та записи, додані користувачами.
+
+% ============================================================================================
+\section{Опис реалізації}
+
+\subsection{Програмне середовище}
+
+Роботу виконано в ноутбуці Jupyter (див. додаток~А) на кластері Apache Spark~4.0.4 у режимі Standalone~\cite{spark-docs}, розгорнутому локально в Docker Compose. Склад середовища наведено в табл.~\ref{tab:env}, схему взаємодії компонентів -- на рис.~\ref{fig:architecture}.
+
+\begin{table}[H]
+  \caption{Програмне середовище}\label{tab:env}
+  \begin{tabularx}{\textwidth}{|l|Y|}
+    \hline
+    Компонент & Призначення та параметри \\
+    \hline
+    spark-master & менеджер ресурсів кластера, \texttt{spark://127.0.0.1:7077} \\
+    spark-worker-1, -2 & виконавці (executors): по 4 ядра та 6 ГБ пам'яті, Python~3.13 для коду на Python \\
+    Драйвер & процес ядра Jupyter: PySpark~4.0.4, GraphFrames~0.12.3, pandas \\
+    Дані & директорія \texttt{data/}, змонтована за тим самим шляхом у кожен контейнер \\
+    \hline
+  \end{tabularx}
+\end{table}
+
+\addimg{../assets/architecture.pdf}{0.95}{Архітектура кластера}{fig:architecture}
+
+Ноутбук не є клієнтом кластера, а виконує роль драйвера: PySpark запускає локальну JVM, яка будує план кожного запиту оптимізатором Catalyst і ділить його на задачі. Master лише виділяє ресурси (кроки 1--2 на рис.~\ref{fig:architecture}); executors у контейнерах підключаються до драйвера, самі читають дані з \texttt{data/} і обмінюються проміжними результатами (shuffle) (кроки 3--5). Контейнери використовують мережу хоста, тому executors звертаються до драйвера за адресою 127.0.0.1. Стан контейнерів після запуску показано на рис.~\ref{fig:cluster}, вебінтерфейс master -- на рис.~\ref{fig:spark-master}: два робочі вузли по 4 ядра, і всі 8 ядер зайняті застосунком \texttt{lab002} (сесією ноутбука).
+
+\addshot{cluster-ps.png}{Контейнери кластера після запуску}{fig:cluster}
+
+\addshot{spark-master.png}{Вебінтерфейс Spark Master: робочі вузли та запущений застосунок}{fig:spark-master}
+
+\subsection{Завантаження та очищення даних}
+
+Файли завантажує скрипт \texttt{download\_data.py} (додаток~Б, рис.~\ref{fig:download}). Оскільки файли не мають заголовків, схеми задано явно, а значення \verb|\N| читаються як \texttt{NULL} (лістинг~\ref{lst:read}). Шлях до файлів абсолютний: файл читають executors, а директорія \texttt{data/} змонтована за цим шляхом на кожному вузлі. Кількість записів показано на рис.~\ref{fig:row-counts}, приклад маршрутів -- на рис.~\ref{fig:routes-preview}.
+
+\addshot{download.png}{Завантаження даних OpenFlights}{fig:download}
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[language=Python, caption={Читання файлів OpenFlights зі схемами}, label={lst:read}]
+S, I, D = StringType(), IntegerType(), DoubleType()
+
+
+def schema(*fields):
+    return StructType([StructField(name, dtype) for name, dtype in fields])
+
+
+AIRPORTS = schema(
+    ("id", I), ("name", S), ("city", S), ("country", S), ("iata", S), ("icao", S), ("latitude", D),
+    ("longitude", D), ("altitude", I), ("timezone", D), ("dst", S), ("tz", S), ("type", S), ("source", S),
+)
+AIRLINES = schema(
+    ("id", I), ("name", S), ("alias", S), ("iata", S), ("icao", S), ("callsign", S), ("country", S), ("active", S),
+)
+ROUTES = schema(
+    ("airline", S), ("airline_id", I), ("src", S), ("src_id", I), ("dst", S), ("dst_id", I), ("codeshare", S),
+    ("stops", I), ("equipment", S),
+)
+
+
+def read(name, file_schema):
+    # Absolute path: executors read the file themselves, and data/ is mounted at this path on every worker.
+    return spark.read.csv(str(OPENFLIGHTS / name), schema=file_schema, nullValue="\\N")
+
+
+airports = read("airports-extended.dat", AIRPORTS)
+airlines = read("airlines.dat", AIRLINES)
+routes = read("routes.dat", ROUTES)
+for name, df in [("airports", airports), ("airlines", airlines), ("routes", routes)]:
+    df.createOrReplaceTempView(name)
+\end{lstlisting}
+\end{minipage}
+\medskip
+
+\addshot{row-counts.png}{Кількість записів у таблицях}{fig:row-counts}
+
+\addshot{routes-preview.png}{Перші маршрути таблиці routes}{fig:routes-preview}
+
+Перевірку якості маршрутів наведено в лістингу~\ref{lst:quality} і на рис.~\ref{fig:quality}: 423 маршрути не мають ідентифікатора аеропорту (з'єднання з координатами для них неможливе), 479 -- ідентифікатора авіакомпанії, 14\,597 є codeshare-маршрутами, а один маршрут є петлею (аеропорт вильоту збігається з аеропортом прильоту).
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[language=SQL, caption={Перевірка якості маршрутів}, label={lst:quality}]
+SELECT
+    COUNT(*) AS routes,
+    COUNT_IF(src_id IS NULL OR dst_id IS NULL) AS without_airport_id,
+    COUNT_IF(airline_id IS NULL) AS without_airline_id,
+    COUNT_IF(codeshare = 'Y') AS codeshare,
+    COUNT_IF(src_id = dst_id) AS same_airport
+
+FROM
+    routes
+\end{lstlisting}
+\end{minipage}
+\medskip
+
+\addshot{route-quality.png}{Проблеми якості в таблиці маршрутів}{fig:quality}
+
+Відстань по великому колу між аеропортами вильоту $(\varphi_1, \lambda_1)$ і прильоту $(\varphi_2, \lambda_2)$ обчислюється за формулою гаверсинуса:
+\begin{equation}\label{eq:haversine}
+  d = 2R \arcsin\sqrt{\sin^2\frac{\varphi_2 - \varphi_1}{2} + \cos\varphi_1 \cos\varphi_2 \sin^2\frac{\lambda_2 - \lambda_1}{2}}, \quad R = 6371~\text{км}.
+\end{equation}
+
+Представлення \texttt{route\_distances\_all} (лістинг~\ref{lst:distances}) з'єднує маршрути з таблицею аеропортів двічі -- для аеропорту вильоту та прильоту -- і обчислює відстань~(\ref{eq:haversine}). \texttt{INNER JOIN} відкидає маршрути без ідентифікатора аеропорту, умова \texttt{WHERE} -- петлю.
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[language=SQL, caption={Координати маршрутів і відстань за формулою гаверсинуса}, label={lst:distances}]
+CREATE OR REPLACE TEMP VIEW route_distances_all AS
+SELECT
+    r.airline,
+    r.airline_id,
+    r.codeshare,
+    r.src_id,
+    r.dst_id,
+    s.iata AS src_iata,
+    d.iata AS dst_iata,
+    s.country AS src_country,
+    d.country AS dst_country,
+    2 * 6371 * ASIN(SQRT(
+        POWER(SIN(RADIANS(d.latitude - s.latitude) / 2), 2)
+        + COS(RADIANS(s.latitude)) * COS(RADIANS(d.latitude))
+        * POWER(SIN(RADIANS(d.longitude - s.longitude) / 2), 2)
+    )) AS distance_km
+
+FROM
+    routes AS r
+
+INNER JOIN
+    airports AS s
+    ON r.src_id = s.id
+
+INNER JOIN
+    airports AS d
+    ON r.dst_id = d.id
+
+WHERE 1=1
+    AND r.src_id != r.dst_id
+\end{lstlisting}
+\end{minipage}
+\medskip
+
+Сортування за відстанню виявило пошкоджений запис (рис.~\ref{fig:longest-raw},~\ref{fig:broken-airport}): найдовші «рейси» (понад 15\,900~км, довше за будь-який реальний безпосадковий рейс) ведуть до аеропорту 5613, у якого місто й країна -- Солвезі, Замбія, а назва, код ICAO та координати належать аеродрому Los Alamitos у Каліфорнії. Маршрути через цей аеропорт виключено (лістинг~\ref{lst:clean}); наступний за довжиною маршрут SYD $\to$ DFW (13\,808~км) реальний.
+
+\addshot{longest-raw.png}{Найдовші маршрути до очищення}{fig:longest-raw}
+
+\addshot{broken-airport.png}{Пошкоджений запис аеропорту 5613}{fig:broken-airport}
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[language=SQL, caption={Виключення маршрутів через пошкоджений аеропорт}, label={lst:clean}]
+CREATE OR REPLACE TEMP VIEW route_distances AS
+SELECT
+    *
+
+FROM
+    route_distances_all
+
+WHERE 1=1
+    AND src_id NOT IN (5613)
+    AND dst_id NOT IN (5613)
+\end{lstlisting}
+\end{minipage}
+\medskip
+
+Після очищення залишилося 67\,235 маршрутів з координатами (рис.~\ref{fig:distance-stats}) довжиною від 1 до 13\,808~км, у середньому 1\,845~км.
+
+\addshot{distance-stats.png}{Статистика відстаней після очищення}{fig:distance-stats}
+
+\subsection{Обґрунтування вибору алгоритмів}
+
+\textbf{Модель графа.} Вершини -- аеропорти, що мають хоча б один маршрут, ребра -- напрямки «аеропорт $\to$ аеропорт» з атрибутами \texttt{distance\_km} і кількістю авіакомпаній. Маршрути різних авіакомпаній між тією ж парою аеропортів об'єднано в одне ребро: інакше кожен шлях повторювався б для кожної комбінації перевізників, а пошук маршрутів вимірює зв'язність мережі, а не кількість перевізників. Граф напрямлений, як і маршрути OpenFlights.
+
+\textbf{Пошук мотивів (завдання 2, 3).} Завдання вимагають \emph{усіх} маршрутів до заданої кількості пересадок і їх фізичної довжини. Мотив \texttt{(a)-[e1]->(b); (b)-[e2]->(c)}~\cite{graphframes-docs} перетворюється на з'єднання таблиць ребер і вершин, тому дає кожен шлях заданої довжини з атрибутами всіх ребер, з яких сумується відстань. Для мотивів написано допоміжну функцію \texttt{simple\_paths} (додаток~Б): вона будує ланцюжок з $k$ ребер, додає умови на першу й останню вершину та забороняє повторне відвідування аеропорту (простий шлях).
+
+\textbf{BFS (завдання 2).} Пошук у ширину -- рекомендований завданням альтернативний метод; його виконано для порівняння з мотивами. Він знаходить шляхи з мінімальною кількістю сегментів, але не всі шляхи до заданої довжини і без урахування кілометрів, тому для завдання~3 не підходить.
+
+\textbf{PageRank (завдання 4)}~\cite{needham2019} оцінює транзитивний вплив: ранг аеропорту залежить не лише від кількості напрямків, а й від рангу аеропортів, з яких до нього летять. Для порівняння обчислено ступеневу центральність (кількість напрямків).
+
+\textbf{Connected Components і Label Propagation (завдання 5).} Слабко зв'язні компоненти (напрямок ребер ігнорується) прямо відповідають на питання про ізольовані підграфи: група аеропортів, не досяжна з основної мережі, -- окрема компонента. Проте майже всі аеропорти утворюють одну компоненту, тому для виділення кластерів усередині мережі додатково застосовано Label Propagation: кожна вершина ітеративно переймає найчастішу мітку сусідів, і тісніше пов'язані між собою аеропорти отримують спільну мітку.
+
+\subsection{Завдання 1. Сумарна довжина рейсів авіакомпаній}
+
+Сумарну довжину рейсів обчислює запит з лістингу~\ref{lst:airlines}. Враховано лише маршрути, які авіакомпанія виконує сама: codeshare-маршрут -- це рейс іншого перевізника. Кожен маршрут рахується один раз, незалежно від частоти рейсів. Результати для порядку \texttt{DESC} і \texttt{ASC} наведено на рис.~\ref{fig:airlines-top},~\ref{fig:airlines-bottom}.
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[language=SQL, caption={Сумарна довжина маршрутів авіакомпаній}, label={lst:airlines}]
+SELECT
+    a.name AS airline,
+    a.country,
+    COUNT(*) AS routes,
+    ROUND(SUM(f.distance_km)) AS total_km
+
+FROM
+    route_distances AS f
+
+INNER JOIN
+    airlines AS a
+    ON f.airline_id = a.id
+
+WHERE 1=1
+    AND f.codeshare IS NULL
+
+GROUP BY a.id, a.name, a.country
+
+ORDER BY total_km DESC
+
+LIMIT 10
+\end{lstlisting}
+\end{minipage}
+\medskip
+
+\addshot{airlines-top.png}{Авіакомпанії з найбільшою сумарною довжиною маршрутів}{fig:airlines-top}
+
+\addshot{airlines-bottom.png}{Авіакомпанії з найменшою сумарною довжиною маршрутів}{fig:airlines-bottom}
+
+\subsection{Завдання 2. Пошук маршрутів Німеччина -- Велика Британія}
+
+Граф будується з представлення \texttt{route\_distances} (лістинг~\ref{lst:graph}) і містить 3\,329 вершин і 37\,269 ребер (рис.~\ref{fig:graph}). Обидва DataFrame кешуються, бо кожен наступний алгоритм читає їх багато разів.
+
+\begin{lstlisting}[language=Python, caption={Побудова графа авіасполучень}, label={lst:graph}]
+edges = spark.sql(r"""
+SELECT
+    src_id AS src,
+    dst_id AS dst,
+    FIRST(distance_km) AS distance_km,
+    COUNT(DISTINCT airline_id) AS airlines
+
+FROM
+    route_distances
+
+GROUP BY src_id, dst_id
+""").cache()
+edges.createOrReplaceTempView("edges")
+
+vertices = spark.sql(r"""
+SELECT
+    a.id,
+    COALESCE(a.iata, a.icao, CAST(a.id AS STRING)) AS code,
+    a.name,
+    a.city,
+    a.country,
+    a.latitude,
+    a.longitude
+
+FROM
+    airports AS a
+
+WHERE 1=1
+    AND a.id IN (SELECT src FROM edges UNION SELECT dst FROM edges)
+""").cache()
+vertices.createOrReplaceTempView("vertices")
+
+g = GraphFrame(vertices, edges)
+\end{lstlisting}
+
+\addshot{graph.png}{Розмір графа авіасполучень}{fig:graph}
+
+\subsubsection{Пошук мотивів}
+
+Маршрути з 1, 2 і 3 сегментами знаходить функція \texttt{simple\_paths} (лістинг~\ref{lst:motifs}). Для трьох сегментів вона формує мотив \texttt{(a)-[e1]->(b); (b)-[e2]->(c); (c)-[e3]->(d)} і умову \texttt{a.country = 'Germany' AND d.country = 'United Kingdom'} разом із шістьма нерівностями \texttt{a.id != b.id}, \texttt{a.id != c.id}, \ldots{} для всіх пар вершин. Кількість знайдених маршрутів наведено на рис.~\ref{fig:motif-counts}, найкоротші маршрути кожної довжини -- на рис.~\ref{fig:motif-examples}.
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[language=Python, caption={Пошук маршрутів мотивами}, label={lst:motifs}]
+FROM_DE = "{v}.country = 'Germany'"
+TO_UK = "{v}.country = 'United Kingdom'"
+
+de_uk = {segments: simple_paths(g, segments, FROM_DE, TO_UK).cache() for segments in (1, 2, 3)}
+\end{lstlisting}
+\end{minipage}
+\medskip
+
+\addshot{motif-counts.png}{Кількість маршрутів з Німеччини до Великої Британії за кількістю сегментів}{fig:motif-counts}
+
+\addshot{motif-examples.png}{Найкоротші маршрути з 1, 2 і 3 сегментами}{fig:motif-examples}
+
+Як Spark виконує мотив, видно з плану запиту у вебінтерфейсі драйвера (рис.~\ref{fig:spark-motif-dag}, мотив з одного сегмента). Таблиця ребер (37\,269 рядків) з'єднується з вершинами двічі: для аеропорту вильоту та прильоту. Оптимізатор Catalyst переніс умови на країну до з'єднань: з 3\,329 вершин фільтр залишає 32 аеропорти Німеччини та 52 Великої Британії. Ці невеликі таблиці розсилаються на всі executors (\texttt{BroadcastExchange}), тож з'єднання відбувається без перерозподілу (shuffle) таблиці ребер: перше з'єднання залишає 1\,409 ребер з Німеччини, друге -- 73 прямі маршрути.
+
+\addshot{spark-motif-dag.png}{Фрагмент плану виконання мотиву з одного сегмента у вебінтерфейсі Spark}{fig:spark-motif-dag}
+
+Аеропорти пересадки на маршрутах з однією пересадкою наведено на рис.~\ref{fig:transfer-hubs}.
+
+\addshot{transfer-hubs.png}{Найчастіші аеропорти пересадки (2 сегменти)}{fig:transfer-hubs}
+
+\subsubsection{Пошук у ширину (BFS)}
+
+Той самий пошук методом BFS виконує один виклик (лістинг~\ref{lst:bfs}). BFS повертає всі шляхи мінімальної довжини (за кількістю сегментів), але мінімум визначається один для всієї множини початкових вершин: пошук іде одночасно від усіх аеропортів Німеччини і зупиняється на першій глибині, на якій досягнуто будь-якого аеропорту Великої Британії. З частини німецьких аеропортів є прямі рейси, тому ця глибина дорівнює 1, і результат -- 73 прямі маршрути (рис.~\ref{fig:bfs}), ті самі, що й у мотиву з одного сегмента.
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[language=Python, caption={Пошук маршрутів методом BFS}, label={lst:bfs}]
+bfs = g.bfs(fromExpr="country = 'Germany'", toExpr="country = 'United Kingdom'", maxPathLength=3)
+bfs.count(), bfs.columns
+\end{lstlisting}
+\end{minipage}
+\medskip
+
+\addshot{bfs.png}{Результат BFS для Німеччина $\to$ Велика Британія}{fig:bfs}
+
+Отже, пошук від усієї Німеччини не показує, як BFS іде глибше, і не відрізняється від мотиву з одного сегмента. Тому BFS запущено ще й від одного аеропорту, з якого немає прямих рейсів до Великої Британії. Запит обирає такий аеропорт з найбільшою кількістю напрямків, щоб маршрутів з пересадкою було якомога більше: це Фрідріхсгафен (FDH). Для нього мінімальна довжина -- 2 сегменти, і BFS повертає 90 маршрутів з однією пересадкою (рис.~\ref{fig:bfs-one}). Цих маршрутів немає в результаті пошуку від усієї Німеччини, хоча FDH -- німецький аеропорт. Порівняння кількості шляхів, знайдених обома методами, наведено на рис.~\ref{fig:bfs-vs-motifs}; аналіз -- у підрозділі~\ref{sec:motifs-vs-bfs}.
+
+\addshot{bfs-one.png}{Найкоротші за відстанню з маршрутів BFS для FDH}{fig:bfs-one}
+
+\addshot{bfs-vs-motifs.png}{Кількість шляхів: BFS і мотиви з 1--3 сегментів}{fig:bfs-vs-motifs}
+
+\subsection{Завдання 3. Найкоротший та найдовший маршрути TXL -- EDI}
+
+Між Берлін-Тегель (TXL) і Единбургом (EDI) шукаються прості шляхи з 1--4 сегментів (до 3 пересадок) тією ж функцією \texttt{simple\_paths} (лістинг~\ref{lst:txl-edi}); довжина маршруту -- сума відстаней сегментів у кілометрах. Прямого рейсу немає; маршрутів з 2, 3 і 4 сегментів знайдено 40, 2\,745 і 180\,069 (рис.~\ref{fig:txl-edi-counts}). Найкоротші та найдовші маршрути наведено на рис.~\ref{fig:txl-edi-extremes}.
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[language=Python, caption={Маршрути TXL $\to$ EDI з 1--4 сегментів}, label={lst:txl-edi}]
+SRC, DST = "TXL", "EDI"
+
+paths = None
+for segments in (1, 2, 3, 4):
+    found = simple_paths(g, segments, f"{{v}}.code = '{SRC}'", f"{{v}}.code = '{DST}'")
+    paths = found if paths is None else paths.unionByName(found)
+paths = paths.cache()
+
+show(paths.groupBy("segments").count().orderBy("segments"))
+\end{lstlisting}
+\end{minipage}
+\medskip
+
+\addshot{txl-edi-counts.png}{Кількість маршрутів TXL $\to$ EDI за кількістю сегментів}{fig:txl-edi-counts}
+
+\addshot{txl-edi-extremes.png}{Найкоротші та найдовші маршрути TXL $\to$ EDI}{fig:txl-edi-extremes}
+
+Найкоротший маршрут -- TXL $\to$ AMS $\to$ EDI (1\,245~км) з пересадкою в Амстердамі. Найдовший -- TXL $\to$ ORD $\to$ HKG $\to$ EWR $\to$ EDI (37\,808~км, 94\,\% довжини екватора): формально він задовольняє умови (не більше трьох пересадок, жоден аеропорт не повторюється), але практичного сенсу не має. Найдовші маршрути складаються з трансатлантичних і транстихоокеанських сегментів між найбільшими хабами, бо саме з них є найдовші безпосадкові рейси.
+
+\subsection{Завдання 4. PageRank}
+
+PageRank запущено з \texttt{resetProbability = 0.15}, що відповідає коефіцієнту демпфування 0,85, і 20 ітераціями (лістинг~\ref{lst:pagerank}). Для порівняння до результату додано вхідний і вихідний ступені вершин (рис.~\ref{fig:pagerank}); аеропорти з найбільшою кількістю напрямків показано на рис.~\ref{fig:degree}.
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[language=Python, caption={PageRank і ступенева центральність}, label={lst:pagerank}]
+ranks = g.pageRank(resetProbability=0.15, maxIter=20).vertices
+degrees = g.inDegrees.join(g.outDegrees, "id")
+
+show(
+    ranks.join(degrees, "id")
+    .select("code", "name", "city", "country", F.round("pagerank", 2).alias("pagerank"), "inDegree", "outDegree")
+    .orderBy(F.desc("pagerank")),
+    10,
+)
+\end{lstlisting}
+\end{minipage}
+\medskip
+
+\addshot{pagerank.png}{10 аеропортів з найбільшим PageRank}{fig:pagerank}
+
+\addshot{degree.png}{10 аеропортів з найбільшою кількістю напрямків вильоту}{fig:degree}
+
+Код \texttt{ISL} належить стамбульському аеропорту Ататюрк: у 2019~році код \texttt{IST} перейшов до нового аеропорту Стамбула, і довідник аеропортів OpenFlights це відображає, тоді як маршрути зібрано раніше (2014~рік).
+
+Вплив параметра \texttt{resetProbability} досліджено для значень 0,05--0,85 (лістинг~\ref{lst:reset}, рис.~\ref{fig:reset}).
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[language=Python, caption={PageRank для різних значень resetProbability}, label={lst:reset}]
+top_by_reset = {}
+for reset in (0.05, 0.15, 0.3, 0.5, 0.85):
+    top = g.pageRank(resetProbability=reset, maxIter=20).vertices.orderBy(F.desc("pagerank")).limit(5)
+    top_by_reset[reset] = [f"{row.code} ({row.pagerank:.1f})" for row in top.collect()]
+\end{lstlisting}
+\end{minipage}
+\medskip
+
+\addshot{reset-probability.png}{5 найвпливовіших аеропортів для різних значень resetProbability}{fig:reset}
+
+У вебінтерфейсі драйвера видно, як GraphFrames виконує алгоритми (рис.~\ref{fig:spark-sql-list}). Для PageRank граф перетворюється на RDD (\texttt{rdd at GraphFrame.scala}), ітерації виконує GraphX, а результат повертається у DataFrame (\texttt{count at PageRank.scala}); кожен з п'яти запусків з лістингу~\ref{lst:reset} дає дві такі операції. Компоненти зв'язності (\texttt{TwoPhase.scala}, наступний підрозділ) реалізовано серією запитів DataFrame із записом проміжних результатів у checkpoint-директорію (\texttt{parquet at TwoPhase.scala}).
+
+\addshot{spark-sql-list.png}{Запити PageRank і Connected Components у вкладці SQL / DataFrame вебінтерфейсу Spark}{fig:spark-sql-list}
+
+\subsection{Завдання 5. Кластеризація та аналіз зв'язності}
+
+Слабко зв'язні компоненти обчислює метод \texttt{connectedComponents} (лістинг~\ref{lst:components}). Алгоритм потребує checkpoint-директорії, спільної для драйвера та всіх executors; її розміщено в змонтованій директорії \texttt{data/}. Розміри всіх компонент наведено на рис.~\ref{fig:components}, кластери з не менше ніж 5 аеропортів -- на рис.~\ref{fig:components-5}.
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[language=Python, caption={Компоненти зв'язності}, label={lst:components}]
+components = g.connectedComponents().cache()
+component_sizes = components.groupBy("component").count().orderBy(F.desc("count"))
+show(component_sizes)
+
+show(component_sizes.filter("count >= 5"))
+\end{lstlisting}
+\end{minipage}
+\medskip
+
+\addshot{components.png}{Розміри компонент зв'язності}{fig:components}
+
+\addshot{components-5.png}{Компоненти з не менше ніж 5 аеропортів}{fig:components-5}
+
+Ізольовані підграфи -- компоненти з 2 і більше аеропортів, крім найбільшої (основної мережі) -- знаходить запит з лістингу~\ref{lst:isolated} (рис.~\ref{fig:isolated}).
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[language=Python, caption={Ізольовані підграфи}, label={lst:isolated}]
+main_component = component_sizes.first().component
+isolated = (
+    components.join(component_sizes, "component")
+    .filter((F.col("component") != main_component) & (F.col("count") >= 2))
+    .groupBy("component", "count")
+    .agg(
+        F.concat_ws(", ", F.sort_array(F.collect_list(F.concat_ws(" ", "code", F.concat(F.lit("("), "city", F.lit(")")))))).alias("airports"),
+        F.concat_ws(", ", F.array_distinct(F.collect_list("country"))).alias("countries"),
+    )
+    .orderBy(F.desc("count"))
+)
+\end{lstlisting}
+\end{minipage}
+\medskip
+
+\addshot{isolated.png}{Ізольовані підграфи}{fig:isolated}
+
+Для виділення кластерів усередині основної мережі запущено Label Propagation з 5 ітераціями (лістинг~\ref{lst:lpa}); він знайшов 71 спільноту з не менше ніж 5 аеропортів (рис.~\ref{fig:lpa-count}). Для кожної спільноти обчислено розмір, кількість країн, головну країну з її часткою та п'ять аеропортів з найбільшою кількістю напрямків (рис.~\ref{fig:lpa-summary}).
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[language=Python, caption={Label Propagation}, label={lst:lpa}]
+communities = g.labelPropagation(maxIter=5).cache()
+community_sizes = communities.groupBy("label").count()
+community_sizes.filter("count >= 5").count()
+\end{lstlisting}
+\end{minipage}
+\medskip
+
+\addshot{lpa-count.png}{Кількість спільнот з не менше ніж 5 аеропортів}{fig:lpa-count}
+
+\addshot{lpa-summary.png}{15 найбільших спільнот Label Propagation}{fig:lpa-summary}
+
+% ============================================================================================
+\section{Аналіз результатів}
+
+\subsection{Авіакомпанія з найбільшим кілометражем}
+
+П'ять авіакомпаній з найбільшою сумарною довжиною власних маршрутів наведено в табл.~\ref{tab:airlines}; середню довжину маршруту обчислено як відношення сумарної довжини до кількості маршрутів.
+
+\begin{table}[H]
+  \caption{Авіакомпанії з найбільшою сумарною довжиною маршрутів}\label{tab:airlines}
+  \begin{tabularx}{\textwidth}{|Y|l|r|r|r|}
+    \hline
+    Авіакомпанія & Країна & Маршрутів & Сумарно, км & Середня, км \\
+    \hline
+    Ryanair & Ірландія & 2\,484 & 3\,700\,425 & 1\,490 \\
+    US Airways & США & 1\,446 & 3\,477\,460 & 2\,405 \\
+    American Airlines & США & 1\,265 & 3\,342\,406 & 2\,642 \\
+    United Airlines & США & 905 & 3\,046\,248 & 3\,366 \\
+    Delta Air Lines & США & 1\,146 & 3\,013\,769 & 2\,630 \\
+    \hline
+  \end{tabularx}
+\end{table}
+
+Найбільший кілометраж має Ryanair: 3,70~млн~км на 2\,484 маршрутах. Лідерство забезпечує не довжина рейсів (у середньому 1\,490~км -- найменше серед п'ятірки), а кількість маршрутів: лоукостер будує мережу «з точки в точку» між сотнями європейських аеропортів, і майже кожна пара його баз має окремий маршрут. Американські мережеві перевізники мають у 1,7--2,7 раза менше маршрутів, але вони довші (2\,405--3\,366~км) завдяки трансконтинентальним і міжнародним рейсам.
+
+Найменший кілометраж має TransHolding System (Бразилія): 36~км на 2 маршрутах. Усі 10 авіакомпаній з найменшим кілометражем мають рівно 2 власні маршрути загальною довжиною 36--237~км; серед них вертолітні (Papillon Grand Canyon Helicopters, Helijet) та місцеві перевізники.
+
+Метрика рахує кожен маршрут один раз, тому показує довжину мережі маршрутів, а не реальний наліт: частоти рейсів у OpenFlights відсутні. Codeshare-маршрути (14\,597) не враховано, інакше авіакомпанії отримували б кілометри рейсів партнерів.
+
+\subsection{Порівняння пошуку мотивів і BFS}\label{sec:motifs-vs-bfs}
+
+Результати обох методів наведено в табл.~\ref{tab:motifs-bfs} (для FDH у ноутбуці обчислено лише загальну кількість маршрутів мотивами), порівняння реалізації -- у табл.~\ref{tab:motifs-bfs-impl}.
+
+\begin{table}[H]
+  \caption{Кількість знайдених маршрутів}\label{tab:motifs-bfs}
+  \begin{tabularx}{\textwidth}{|Y|r|r|r|r|r|}
+    \hline
+    \multirow{2}{=}{Пошук} & \multicolumn{4}{c|}{Мотиви} & \multirow{2}{*}{BFS} \\
+    \cline{2-5}
+     & 1 сегм. & 2 сегм. & 3 сегм. & Разом & \\
+    \hline
+    Німеччина $\to$ Велика Британія & 73 & 9\,178 & 506\,498 & 515\,749 & 73 \\
+    FDH $\to$ Велика Британія & 0 & \multicolumn{2}{c|}{--} & 6\,028 & 90 \\
+    \hline
+  \end{tabularx}
+\end{table}
+
+\begin{table}[!htb]
+  \caption{Порівняння реалізації пошуку мотивів і BFS}\label{tab:motifs-bfs-impl}
+  \begin{tabularx}{\textwidth}{|l|Y|Y|}
+    \hline
+    Критерій & Мотиви & BFS \\
+    \hline
+    Що знаходить & усі шляхи заданої довжини & усі шляхи мінімальної кількості сегментів \\
+    Виклики & окремий мотив для кожної довжини (1, 2, 3) & один виклик з \texttt{maxPathLength=3} \\
+    Прості шляхи & явні умови $u \ne v$ для кожної пари вершин: 1, 3, 6 умов & гарантовано: найкоротший шлях не повторює вершин \\
+    Кінцеві вершини & умови на першу та останню вершину & \texttt{fromExpr}, \texttt{toExpr} \\
+    Вартість & $2k$ з'єднань для $k$ сегментів; результат зростає комбінаторно & з'єднання по одному рівню, зупинка на першій глибині з результатом \\
+    Відстань маршруту & сума атрибутів ребер \texttt{e1}..\texttt{ek} & можлива, але лише для найкоротших шляхів \\
+    \hline
+  \end{tabularx}
+\end{table}
+
+\textbf{Результати.} Мотиви знаходять 73 прямі маршрути, 9\,178 з однією пересадкою і 506\,498 з двома. Кожен додатковий сегмент збільшує кількість маршрутів у 55--126 разів: у графі в середньому 11,2 напрямку з аеропорту, а через хаби з сотнями напрямків число продовжень зростає ще швидше. BFS повертає всі маршрути з мінімальною кількістю сегментів, причому мінімум один для всієї множини початкових аеропортів. Від усієї Німеччини це 1 сегмент, тому BFS дає ті самі 73 прямі маршрути, що й мотив з одного сегмента; маршрути з пересадкою до результату не потрапляють навіть для аеропортів без прямих рейсів, таких як FDH. Щоб порівняти методи на однаковій множині шляхів, обидва запущено від одного аеропорту FDH: його мінімум -- 2 сегменти, і BFS знаходить 90 маршрутів з однією пересадкою, тоді як мотиви з 1--3 сегментів -- 6\,028 маршрутів з однією або двома пересадками (прямих рейсів з FDH немає). Отже, BFS відповідає на питання «як дістатися з мінімальною кількістю пересадок», а всі маршрути до двох пересадок, яких вимагає завдання, дають лише мотиви.
+
+\textbf{Складність реалізації.} BFS -- один виклик бібліотеки з умовами на початкові й кінцеві вершини. Мотиви потребують окремого шаблону для кожної довжини шляху і явних фільтрів: GraphFrames не забороняє повторювати вершину в мотиві, тому без умов $a \ne c$ та інших знайшлися б маршрути на кшталт DUS $\to$ AMS $\to$ DUS $\to$ LHR. Функція \texttt{simple\_paths} (додаток~Б) генерує ці шаблони та умови, але логіка «простого шляху» -- відповідальність користувача, а не бібліотеки. Обчислювальна вартість також різна: мотив з $k$ сегментів -- це $2k$ з'єднань (рис.~\ref{fig:spark-motif-dag}), і результат для трьох сегментів (506\,498 рядків) необхідно повністю матеріалізувати, тоді як BFS зупиняється, щойно знайдено ціль.
+
+\textbf{Пересадки.} Найчастіші аеропорти пересадки -- курортні аеропорти Іспанії та Португалії: Пальма-де-Мальорка (648 маршрутів), Малага (391), Тенерифе-Південь (340), а також Амстердам (288). Лоукостери літають на курорти з багатьох аеропортів обох країн, тому граф містить багато пар «Німеччина $\to$ курорт $\to$ Велика Британія». Пошук у графі не враховує розкладу та авіакомпаній, тому такі маршрути -- можливі комбінації рейсів, а не квитки з пересадкою, які продають перевізники.
+
+\subsection{Найвпливовіші аеропорти за PageRank}
+
+П'ять найвпливовіших аеропортів за PageRank (\texttt{resetProbability = 0.15}): Атланта (ATL, 15,95), Чикаго О'Хара (ORD, 14,63), Стамбул Ататюрк (ISL, 14,62), Денвер (DEN, 14,54) та Даллас/Форт-Ворт (DFW, 14,29). Значення PageRank у GraphFrames нормовано так, що їх сума дорівнює кількості вершин (середнє -- 1), тобто ранг Атланти приблизно в 16 разів більший за середній.
+
+\textbf{Чому саме вони.} PageRank аеропорту -- сума часток рангу аеропортів, з яких до нього є рейси, причому кожен аеропорт ділить свій ранг порівну між усіма своїми напрямками. Американські хаби (ATL, ORD, DEN, DFW) отримують ранг від сотень регіональних аеропортів США, для яких хаб -- один з небагатьох напрямків, тож вони віддають йому значну частку рангу. Крім того, хаби США густо пов'язані між собою і передають ранг один одному. Стамбул поєднує велику кількість напрямків (228 вхідних) з роллю транзитного вузла між Європою, Азією та Африкою.
+
+\textbf{Порівняння зі ступеневою центральністю.} За кількістю напрямків лідирують FRA (239), CDG (237) і AMS (232), а за PageRank вони лише на 7--10 місцях (рис.~\ref{fig:pagerank},~\ref{fig:degree}). Європейські хаби мають багато напрямків, але значна частина їхніх сусідів -- інші великі хаби, які ділять свій ранг між сотнями напрямків, тож кожне ребро приносить мало рангу. Різниця показує, що PageRank оцінює не кількість, а «якість» зв'язків.
+
+\textbf{Порівняння з найбільшими хабами світу.} Маршрути OpenFlights відповідають 2014~року, тому для порівняння взято рейтинг Airports Council International (ACI) за пасажиропотоком 2014~року~\cite{aci2014} (табл.~\ref{tab:aci}).
+
+\begin{table}[!htb]
+  \caption{Найбільші аеропорти світу за пасажиропотоком 2014~року (ACI) та їх місце за PageRank}\label{tab:aci}
+  \begin{tabularx}{\textwidth}{|r|l|Y|r|r|}
+    \hline
+    Місце ACI & Код & Аеропорт & Пасажирів, млн & Місце за PageRank \\
+    \hline
+    1 & ATL & Атланта & 96,2 & 1 \\
+    2 & PEK & Пекін Столичний & 86,1 & 9 \\
+    3 & LHR & Лондон Хітроу & 73,4 & поза 10 \\
+    4 & HND & Токіо Ханеда & 72,8 & поза 10 \\
+    5 & LAX & Лос-Анджелес & 70,7 & поза 10 \\
+    6 & DXB & Дубай & 70,5 & поза 10 \\
+    7 & ORD & Чикаго О'Хара & 70,0 & 2 \\
+    8 & CDG & Париж Шарль-де-Голль & 63,8 & 7 \\
+    9 & DFW & Даллас/Форт-Ворт & 63,6 & 5 \\
+    10 & HKG & Гонконг & 63,1 & поза 10 \\
+    \hline
+  \end{tabularx}
+\end{table}
+
+Збіг частковий. З п'ятірки PageRank до десятки ACI входять ATL (1), ORD (7) і DFW (9). Стамбул Ататюрк у 2014~році був 13-м за пасажиропотоком~\cite{aci2014-prelim}, Денвер до першої десятки не входив. Водночас Хітроу, Ханеда, Лос-Анджелес, Дубай і Гонконг -- 3--6 і 10 місця ACI -- не входять навіть до першої десятки за PageRank, а Хітроу -- і до десятки за кількістю напрямків (у нього менше ніж 187).
+
+Розбіжність зумовлена тим, що саме вимірює PageRank на цьому графі. Граф містить одне ребро на пару аеропортів, без частоти рейсів, місткості літаків і кількості пасажирів, тому PageRank оцінює мережу напрямків, а не пасажиропотік. Щоденні рейси A380 між Лондоном і Дубаєм і рейс невеликого літака раз на тиждень мають однакову вагу. Тому вгору піднімаються аеропорти з густою внутрішньою мережею США, де хаб сполучений з сотнями регіональних аеропортів. Аеропорти з обмеженою кількістю слотів (LHR, HND) обслуговують величезну кількість пасажирів на меншій кількості напрямків -- частими рейсами великих літаків, а Ханеда у 2014~році обслуговувала переважно внутрішні рейси Японії. PageRank таких аеропортів нижчий, хоча за пасажиропотоком вони серед найбільших. Отже, PageRank на графі OpenFlights виявляє вузли, найважливіші для зв'язності мережі напрямків, і для оцінки хабів за пасажиропотоком потрібен граф з вагами ребер (частота рейсів або кількість місць).
+
+\textbf{Вплив resetProbability.} Зі зростанням імовірності скидання значення PageRank вирівнюються: ранг лідера зменшується з 17,7 при 0,05 до 5,2 при 0,85, бо більша частина рангу розподіляється рівномірно між усіма вершинами. Склад лідерів також змінюється (рис.~\ref{fig:reset}). При малих значеннях (0,05) ранг поширюється по довгих ланцюжках, і до п'ятірки входять великі міжнародні хаби CDG та FRA -- оцінка глобальна. При великих значеннях (0,5--0,85) ранг вершини визначає переважно її найближче оточення, і лідерами стають DME, DEN, ATL -- аеропорти з великою кількістю регіональних напрямків, для яких вони є одним із небагатьох сполучень (Домодєдово для аеропортів Росії та СНД, Денвер для регіону Скелястих гір). Значення 0,15 -- компроміс, за якого враховується і транзитивний вплив, і локальна структура; при цьому ATL лідирує для значень 0,05--0,3.
+
+\subsection{Кластери та ізольовані підграфи}
+
+\textbf{Компоненти зв'язності.} Мережа майже повністю зв'язна: 3\,303 з 3\,329 аеропортів (99,2\,\%) утворюють одну слабко зв'язну компоненту. Решта 26 аеропортів розподілені на 6 ізольованих груп (табл.~\ref{tab:isolated}); одиночних ізольованих аеропортів немає, бо вершинами графа є лише аеропорти з маршрутами. Умову «не менше 5 аеропортів» задовольняють лише дві компоненти: основна мережа та група Нової Каледонії (10 аеропортів).
+
+\begin{table}[H]
+  \caption{Ізольовані підграфи}\label{tab:isolated}
+  \begin{tabularx}{\textwidth}{|Y|r|Y|}
+    \hline
+    Регіон & Аеропортів & Аеропорти \\
+    \hline
+    Нова Каледонія & 10 & GEA (Нумеа), острови: BMY, ILP, KNQ, KOC, LIF та ін. \\
+    Намібія & 4 & ERS (Віндгук), MPA, NDU, OND \\
+    Алеутські острови (Аляска, США) & 4 & AKB, DUT, IKO, KQA \\
+    Сієтл та острови Сан-Хуан (США) & 4 & BFI, CLM, ESD, FRD \\
+    Американські Віргінські острови & 2 & SPB, SSB \\
+    Невада -- Гранд-Каньйон (США) & 2 & BLD, GCW \\
+    \hline
+  \end{tabularx}
+\end{table}
+
+Ізольовані групи -- місцеві мережі, що мають лише внутрішні рейси: острівні сполучення (Нова Каледонія, Алеутські та Віргінські острови), регіональні рейси Намібії, туристичні рейси до Гранд-Каньйону. У Нумеа та Віндгуку внутрішні рейси виконуються з другого, «внутрішнього» аеропорту міста (GEA, ERS), а міжнародні -- з іншого, тому в графі ці мережі відірвані від основної, хоча пасажир може пересісти, переїхавши між аеропортами: міжнародний аеропорт Нумеа NOU належить основній компоненті (див. спільноту з NOU на рис.~\ref{fig:lpa-summary}). Частина ізольованості може бути й наслідком неповноти бази OpenFlights: граф містить лише маршрути, які є в ній на 2014~рік.
+
+\textbf{Спільноти Label Propagation.} Оскільки основна компонента охоплює 99\,\% аеропортів, кластери всередині неї виділено алгоритмом Label Propagation: 71 спільнота з не менше ніж 5 аеропортів. Найбільші з них (табл.~\ref{tab:communities}) відповідають регіональним мережам: міжнародним хабам разом з частиною мережі США (796 аеропортів), Північній і Центральній Європі (351), Південній Європі з курортами Середземномор'я (336), Росії, СНД і Південній Азії (216), Східній Азії (159), Південно-Східній Азії та Океанії (157), внутрішній мережі США (102), регіональним аеропортам Китаю (85) та внутрішній мережі Бразилії (73).
+
+\begin{table}[H]
+  \caption{Найбільші спільноти Label Propagation}\label{tab:communities}
+  \begin{tabularx}{\textwidth}{|r|r|l|Y|}
+    \hline
+    Аеропортів & Країн & Головна країна (частка) & Головні аеропорти \\
+    \hline
+    796 & 85 & США (0,43) & ISL, ATL, DXB, JFK, EWR \\
+    351 & 50 & Норвегія (0,12) & FRA, CDG, AMS, MUC, LHR \\
+    336 & 64 & Франція (0,10) & BCN, MAD, PMI, AGP, MXP \\
+    216 & 33 & Індія (0,25) & DME, BKK, VKO, SVX, TAS \\
+    159 & 20 & Японія (0,35) & PEK, PVG, CAN, HKG, ICN \\
+    157 & 17 & Австралія (0,46) & SIN, KUL, SYD, MNL, CGK \\
+    102 & 3 & США (0,49) & ORD, DFW, DEN, IAH, LAX \\
+    85 & 3 & Китай (0,98) & WUX, TXN, CZX, XUZ, MIG \\
+    73 & 1 & Бразилія (1,00) & BSB, CNF, SSA, CGH, CWB \\
+    \hline
+  \end{tabularx}
+\end{table}
+
+Спільноти мають чітку географічну основу: менші з них майже повністю належать одній країні (Китай 98\,\%, Бразилія 100\,\%, Аляска -- спільнота з BET, 100\,\% США), а великі об'єднують регіони навколо спільних хабів. Розбиття не збігається з межами країн: аеропорти США потрапили до трьох спільнот (глобальної з ATL і JFK, внутрішньої з ORD і DFW, аляскинської), а Європа поділена на «північну» мережу мережевих перевізників (FRA, AMS, LHR) і «південну» курортну мережу лоукостерів (BCN, PMI, AGP). Label Propagation виконано з фіксованою кількістю ітерацій (тут 5), без гарантії збіжності, а нічиї між мітками розв'язуються довільно, тому межі між великими спільнотами наближені; стабільним є саме поділ на регіональні мережі.
+
+\FloatBarrier
+
+% ============================================================================================
+\anonsection{Висновки}
+
+У роботі розгорнуто кластер Apache Spark~4.0.4 (master і два робочі вузли) у Docker і з бібліотекою GraphFrames проаналізовано мережу авіасполучень OpenFlights: 67\,663 маршрути, 12\,668 аеропортів і 6\,162 авіакомпанії.
+
+Підготовка даних з'єднанням маршрутів з аеропортами дала координати для 67\,235 маршрутів. Перевірка найдовших відстаней виявила пошкоджений запис аеропорту 5613 (координати Каліфорнії для аеропорту в Замбії), маршрути через який виключено. Найбільшу сумарну довжину власних маршрутів має Ryanair (3,70~млн~км на 2\,484 маршрутах) -- за рахунок кількості маршрутів, а не їх довжини; найменшу -- TransHolding System (36~км на 2 маршрутах).
+
+Граф з 3\,329 аеропортів і 37\,269 напрямків дозволив знайти маршрути з Німеччини до Великої Британії: мотиви знаходять 73 прямі маршрути, 9\,178 з однією пересадкою і 506\,498 з двома, тоді як BFS -- лише 73 найкоротші. BFS простіший у використанні (один виклик), але відповідає лише на питання про мінімальну кількість пересадок; мотиви потребують шаблону для кожної довжини та явних умов простого шляху, і їхній результат зростає комбінаторно. Між TXL та EDI прямого рейсу немає; найкоротший маршрут TXL $\to$ AMS $\to$ EDI має 1\,245~км, найдовший з не більше ніж трьома пересадками -- 37\,808~км.
+
+Найвпливовіші за PageRank аеропорти -- ATL, ORD, ISL, DEN, DFW. Вони лише частково збігаються з найбільшими аеропортами світу за пасажиропотоком 2014~року: граф без ваг оцінює мережу напрямків, тому вгору піднімаються хаби густої внутрішньої мережі США, а аеропорти з обмеженою кількістю слотів і великим пасажиропотоком (LHR, HND) мають нижчий ранг. Зі зростанням \texttt{resetProbability} значення PageRank вирівнюються, а лідерами стають аеропорти з багатьма регіональними напрямками (DME, DEN).
+
+Аналіз зв'язності показав, що 99,2\,\% аеропортів утворюють одну компоненту; 6 ізольованих груп (Нова Каледонія, Намібія, Алеутські острови та ін.) мають лише місцеві рейси. Label Propagation виділив 71 спільноту з не менше ніж 5 аеропортів, що відповідають регіональним мережам. Вебінтерфейс Spark підтвердив, що GraphFrames виконує графові алгоритми як запити DataFrame: мотив -- як ланцюжок broadcast-з'єднань з перенесеними оптимізатором фільтрами, компоненти зв'язності -- як ітеративні запити з checkpoint-ами, а PageRank -- через GraphX.
+
+\printbibliography[heading=bibintoc, title={Список використаних джерел}]
+
+% ============================================================================================
+\clearpage
+\anonsection{Додаток А. Програмний код}
+
+Повний програмний код лабораторної роботи розміщено в репозиторії \url{https://github.com/nuinashco/iasa-bigdata}, директорія \texttt{labs/002-spark-graphframes}:
+\begin{itemize}
+  \item \texttt{draft.ipynb} -- ноутбук Jupyter з усіма кроками роботи та результатами виконання;
+  \item \texttt{src/lab002/paths.py} -- пошук простих шляхів мотивами (додаток~Б);
+  \item \texttt{src/lab002/spark.py} -- налаштування сесії Spark (драйвер у процесі ноутбука, пакет GraphFrames, checkpoint-директорія);
+  \item \texttt{src/lab002/cluster.py} -- запуск кластера та виконання команд;
+  \item \texttt{scripts/download\_data.py} -- завантаження даних OpenFlights (додаток~Б);
+  \item \texttt{infra} -- конфігурація кластера (Docker Compose, образ Spark з Python~3.13).
+\end{itemize}
+
+Ноутбук відтворює роботу повністю: запуск «Run All» розгортає кластер, завантажує дані та виконує всі обчислення.
+
+\anonsection{Додаток Б. Допоміжні модулі}
+
+\setcounter{lstlisting}{0}
+\renewcommand{\thelstlisting}{Б.\arabic{lstlisting}}
+\lstinputlisting[language=Python, caption={Модуль paths.py: пошук простих шляхів мотивами}, label={lst:paths}]{../src/lab002/paths.py}
+
+\lstinputlisting[language=Python, caption={Скрипт download\_data.py}, label={lst:download}]{../scripts/download_data.py}
+
+\end{document}

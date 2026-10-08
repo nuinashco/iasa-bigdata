@@ -1,0 +1,30 @@
+# Spark UI figures; captured while the notebook kernel of the reported run was alive (see the
+# lab-report skill, step 3a). SQL execution ids (19, 49-72) refer to that run.
+
+width = 860
+
+[shots.spark-master]
+url = "http://localhost:8080/"
+hide = ["#completed-app", ".aggregated-completedApps"]
+selector = ".container-fluid"
+
+[shots.spark-sql-list]
+url = "http://localhost:4040/SQL/"
+selector = "table"
+script = """() => {
+    const table = document.querySelector('table');
+    for (const tr of table.querySelectorAll('tbody tr')) {
+        const id = parseInt(tr.cells[0].textContent);
+        if (!(id >= 49 && id <= 72)) tr.style.display = 'none';
+    }
+    for (const tr of table.querySelectorAll('tr'))
+        for (const c of [...tr.cells].slice(4)) c.style.display = 'none';
+    for (const a of table.querySelectorAll('.expand-details')) a.style.display = 'none';
+    table.style.width = 'auto';
+}"""
+
+[shots.spark-motif-dag]
+url = "http://localhost:4040/SQL/execution/?id=19"
+width = 1200
+selector = "#plan-viz-graph"
+crop = [60, 5640, 950, 1078]

@@ -20,6 +20,7 @@ something here seems out of date.
 \topic{<тема з task.pdf>}
 \student{Гавлицький Іван}
 \studentgroup{КІ-61мп}
+\variant{3: Німеччина -- Велика Британія}   % if the lab has variants; printed under the topic
 % optional: \department{Кафедра ...}  \reportyear{2026}
 % subject-wide defaults already set: \discipline, \teacher
 
@@ -39,9 +40,9 @@ something here seems out of date.
 
 **Screenshots**: `\addshot{file}{caption}{label}`. Files live in `report/assets/` (on the graphics path). The macro uses a fixed scale, so text in every screenshot comes out the same size (≈ 7 pt); oversized images shrink to fit the page width or 70 % of its height. Don't pick widths per figure.
 
-**Other images** (diagrams): `\addimg{file}{fraction of \linewidth}{caption}{label}`.
+**Other images** (diagrams): `\addimg{file}{fraction of \linewidth}{caption}{label}`. Diagrams rendered from Mermaid (`../assets/*.pdf`, see SKILL.md step 3b) are vector, but a wide left-to-right diagram scaled to the page width gets tiny text: zoom into its page and check the node labels are readable.
 
-**Tables**: `table[H]` + `tabularx` with full borders. Use the `Y` column type (left-aligned `X`) for any text column: justified narrow cells leave large gaps between words. Numbers right-aligned (`r`).
+**Tables**: `table[H]` + `tabularx` with full borders (for tall tables see the float pitfall below). Use the `Y` column type (left-aligned `X`) for any text column: justified narrow cells leave large gaps between words. Numbers right-aligned (`r`).
 
 ```latex
 \begin{table}[H]
@@ -59,6 +60,19 @@ something here seems out of date.
 Merged cells: `\multirow{3}{=}{text}` in a `Y`/`X` column, `\multirow{2}{*}{text}` in `l`.
 
 **Listings**: `\begin{lstlisting}[language=HiveQL, caption={...}, label={lst:...}]`. Languages: `HiveQL` (Hive; handles backslash escapes like `"\""`), `SQL` (PostgreSQL), `bash`, `Python`. Whole files: `\lstinputlisting[language=Python, caption={...}]{../scripts/x.py}` (paths are relative to `report/`; only the repo is mounted in the build container).
+
+Listings break across pages freely, so a short one can leave its caption and a line or two at the bottom of a page. Keep a listing that fits on one page in one piece with a minipage:
+
+```latex
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[language=SQL, caption={...}, label={lst:...}]
+...
+\end{lstlisting}
+\end{minipage}
+\medskip
+```
+
+Don't use `float=H` on a listing instead: with this class it fails at `\end{lstlisting}` (`Missing } inserted`, then cascading `Misplaced \noalign`). A `\lstnewenvironment` wrapper fails in this TeX Live too. Longer listings stay plain `lstlisting` and may break.
 
 Captions read «Рисунок 2.3 – ...», «Таблиця 2.1 – ...», «Лістинг 2.4 – ...», numbered within sections. In appendices, renumber listings before the first one:
 
@@ -82,7 +96,8 @@ Captions read «Рисунок 2.3 – ...», «Таблиця 2.1 – ...», «
 - **Listing strings break** with language `SQL` on HiveQL backslash escapes (spaces render as `␣`, keywords inside strings turn bold). Use `language=HiveQL` for Hive code.
 - **`\contentsline` / TOC hooks** must come after `hyperref`; already handled in the class. Don't redefine TOC macros in the report.
 - **Wide tables**: put them in `tabularx` with `Y` columns or shorten headers; never let them overflow (check the log for `Overfull \hbox`).
-- **Floats**: use `[H]` (figures/tables right where they're described); the class's `\addshot` already does.
+- **Floats**: use `[H]` (figures/tables right where they're described); the class's `\addshot` already does. Exception: a table taller than about a third of a page with `[H]` leaves a half-empty page before it, or overflows (`Overfull \vbox`). Give such tables `[!htb]`, and put `\FloatBarrier` (the class loads `placeins`) before `\anonsection{Висновки}` so a floated table can't drift into the conclusions.
+- **Bibliography URLs** used to render spread out (`https : / / github . com`); the class now breaks URLs anywhere instead. If you see it again, check the `\biburl...` settings in the class.
 
 ## Build and verification
 
@@ -94,5 +109,5 @@ uv run .claude/skills/lab-report/scripts/render_pages.py labs/<lab>/report/repor
 
 - The first build creates the `iasa-latex` Docker image (~3 min); later builds take seconds.
 - A failing build exits non-zero; the real error is in `build/report.log` (search for `.tex:<line>:`).
-- Expected fonts in the PDF: only `TimesNewRoman*`, `CourierNew*`, `TeXGyreTermesMath`. `CM*` fonts mean something left math mode setup (e.g. a package forced Computer Modern).
-- Look at the contact sheets: title page, ЗМІСТ, every figure readable, no empty half-pages before big figures, tables inside margins. Use `--zoom N` to check small text.
+- Expected fonts in the PDF: `TimesNewRoman*`, `CourierNew*`, `TeXGyreTermesMath`, plus `LiberationSans`/`DejaVuSans` if a Mermaid diagram PDF is included (they're embedded in the diagram, not used by the text). `CM*` fonts mean something left math mode setup (e.g. a package forced Computer Modern).
+- Look at the contact sheets: title page, ЗМІСТ, every figure readable, no empty half-pages before big figures, tables inside margins. Use `--zoom N` (repeatable) to render just those pages readably, e.g. for small text; it skips the contact sheets, so it's quick.

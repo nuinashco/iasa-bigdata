@@ -7,8 +7,8 @@
     uv run .claude/skills/lab-report/scripts/render_pages.py labs/<lab>/report/report.pdf OUT_DIR [--zoom PAGE]
 
 Prints page count, embedded fonts and leftovers (TODO, unresolved "??" references); writes
-OUT_DIR/sheet1.png, sheet2.png, ... for viewing. --zoom PAGE (1-based) also writes a readable
-OUT_DIR/page-PAGE.png, for checking screenshot text size or a formula.
+OUT_DIR/sheet1.png, sheet2.png, ... for viewing. --zoom PAGE (1-based, repeatable) writes a readable
+OUT_DIR/page-PAGE.png instead of the sheets, for checking screenshot text size or a formula.
 """
 
 import argparse
@@ -37,6 +37,12 @@ def main() -> None:
     for kind in ("Рисунок", "Таблиця", "Лістинг"):
         print(f"{kind}: {len(re.findall(kind + r' [\dА-ЯЄІЇ]+\.\d+ –', text))}")
 
+    for number in args.zoom:
+        doc[number - 1].get_pixmap(dpi=110).save(args.out_dir / f"page-{number}.png")
+    if args.zoom:
+        print(f"zoomed: {', '.join(f'{args.out_dir}/page-{n}.png' for n in args.zoom)}")
+        return
+
     pages = [Image.open(io.BytesIO(page.get_pixmap(dpi=45).tobytes("png"))) for page in doc]
     width, height = pages[0].size
     for start in range(0, len(pages), 8):
@@ -44,8 +50,6 @@ def main() -> None:
         for k, img in enumerate(pages[start:start + 8]):
             sheet.paste(img, ((k % 4) * width, (k // 4) * height))
         sheet.save(args.out_dir / f"sheet{start // 8 + 1}.png")
-    for number in args.zoom:
-        doc[number - 1].get_pixmap(dpi=110).save(args.out_dir / f"page-{number}.png")
     print(f"sheets: {args.out_dir}/sheet*.png")
 
 

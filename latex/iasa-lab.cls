@@ -92,6 +92,8 @@
 \RequirePackage{graphicx}
 \graphicspath{{assets/}}
 \RequirePackage{float}
+% \FloatBarrier: floats queued so far are placed before this point (e.g. before Висновки).
+\RequirePackage{placeins}
 \RequirePackage{array}
 \RequirePackage{tabularx}
 \RequirePackage{longtable}
@@ -161,6 +163,12 @@
 \RequirePackage[backend=biber,style=ieee]{biblatex}
 % Latin-script sources keep English conjunctions inside the Ukrainian bibliography.
 \DefineBibliographyStrings{ukrainian}{and={and}, andothers={et\addabbrvspace al\adddot}}
+% biblatex stretches the space after '/', ':' and '.' in URLs to justify lines, which spreads them
+% out ("https : / / github . com"). Allow breaks anywhere in a URL instead, with no stretch.
+\biburlbigskip=0mu\relax
+\setcounter{biburlnumpenalty}{9000}
+\setcounter{biburlucpenalty}{9000}
+\setcounter{biburllcpenalty}{9000}
 
 % ------------------------------------------------------------------ links
 \RequirePackage{hyperref}
@@ -176,7 +184,8 @@
 }
 
 % ------------------------------------------------------------------ title page
-% Subject-wide defaults; each report sets \labnumber, \topic, \student, \studentgroup.
+% Subject-wide defaults; each report sets \labnumber, \topic, \student, \studentgroup and,
+% if the lab has variants, \variant.
 \newcommand{\discipline}[1]{\def\iasa@discipline{#1}}
 \newcommand{\teacher}[1]{\def\iasa@teacher{#1}}
 \newcommand{\department}[1]{\def\iasa@department{#1}}
@@ -185,6 +194,7 @@
 \newcommand{\student}[1]{\def\iasa@student{#1}}
 \newcommand{\studentgroup}[1]{\def\iasa@studentgroup{#1}}
 \newcommand{\reportyear}[1]{\def\iasa@reportyear{#1}}
+\newcommand{\variant}[1]{\def\iasa@variant{#1}}
 \discipline{Обробка надвеликих масивів даних}
 \teacher{Пишнограєв Іван Олександрович}
 \department{}
@@ -193,6 +203,7 @@
 \student{?}
 \studentgroup{}
 \reportyear{\the\year}
+\variant{}
 
 \AtBeginDocument{\hypersetup{pdfauthor={\iasa@student}, pdftitle={Лабораторна робота №\iasa@labnumber. \iasa@topic}}}
 
@@ -210,6 +221,7 @@
     про виконання лабораторної роботи №\iasa@labnumber\\
     з дисципліни «\iasa@discipline»\\[0.5em]
     на тему: {\bfseries «\iasa@topic»}
+    \ifx\iasa@variant\@empty\else\\[0.5em]Варіант \iasa@variant\fi
     \vfill
     \begin{minipage}[t]{0.48\textwidth}
       \raggedright

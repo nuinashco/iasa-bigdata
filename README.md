@@ -5,6 +5,7 @@ Labs for «Обробка надвеликих масивів даних» (KPI,
 | Lab | Topic |
 |---|---|
 | [001](labs/001-hadoop-and-hive) | Distributed data processing in Apache Hadoop and Apache Hive |
+| [002](labs/002-spark-graphframes) | Graph structures with Spark GraphFrames (OpenFlights) |
 
 ## Installation and Usage
 

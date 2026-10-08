@@ -1,0 +1,13 @@
+flowchart LR
+    subgraph host["Ноутбук (хост)"]
+        py["Python-код"] <-->|py4j| driver["JVM — драйвер<br/>• план запиту (Catalyst)<br/>• розбиття на tasks<br/>• роздача jar-файлів"]
+    end
+    subgraph docker["Docker (мережа хоста)"]
+        master["spark-master"]
+        exec["spark-worker-1, -2<br/>executors (JVM)<br/>+ Python 3.13 для UDF"]
+    end
+    driver -->|"① запит ресурсів"| master
+    master -->|"② запуск executors"| exec
+    exec -->|"③ підключення"| driver
+    driver -->|"④ tasks"| exec
+    exec -->|"⑤ результати"| driver

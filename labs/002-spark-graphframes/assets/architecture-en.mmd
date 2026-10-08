@@ -1,0 +1,13 @@
+flowchart LR
+    subgraph host["Your notebook (host)"]
+        py["Python code"] <-->|py4j| driver["JVM: the DRIVER<br/>• plans each query<br/>• splits it into tasks<br/>• serves jar files"]
+    end
+    subgraph docker["Docker (host network)"]
+        master["spark-master"]
+        exec["spark-worker-1, -2<br/>executors (JVM)<br/>+ Python 3.13 for UDFs"]
+    end
+    driver -->|"① need resources"| master
+    master -->|"② starts executors"| exec
+    exec -->|"③ connect back"| driver
+    driver -->|"④ tasks"| exec
+    exec -->|"⑤ results"| driver

@@ -1,0 +1,18 @@
+[project]
+name = "lab-002-spark-graphframes"
+version = "0.1.0"
+description = "Lab 2: graph structures with Spark GraphFrames (OpenFlights)"
+requires-python = ">=3.13"
+dependencies = [
+    "graphframes-py==0.12.3",
+    "pandas>=3.0.6",
+    "pyarrow>=25.0.1",
+    "pyspark==4.0.4",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.23,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "lab002"
