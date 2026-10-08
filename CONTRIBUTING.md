@@ -71,6 +71,7 @@ uv add --package lab-002-<topic> numpy ...   # the lab's own deps
   ```
 
 - Reusable helpers (cluster commands, DB clients) go in the lab's `src/lab<NNN>/`, not in the notebook.
+- The lab's `infra/docker-compose.yml` sets `name: lab<NNN>`. Every lab's compose file lives in a directory called `infra/`, so without an explicit name all labs share the project name `infra` and treat each other's containers as orphans.
 
 ## Reports
 
