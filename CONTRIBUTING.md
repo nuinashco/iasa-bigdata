@@ -10,7 +10,8 @@ The repository is a [uv workspace](https://docs.astral.sh/uv/concepts/projects/w
 ├── latex/                      # report toolchain shared by all labs
 │   ├── iasa-lab.cls            # KPI formatting + title page
 │   └── build.sh                # Dockerised XeLaTeX build
-├── .claude/skills/lab-report/  # Claude Code skill: task.pdf + draft.ipynb -> report
+├── scripts/                    # repo-wide tools (render_mermaid.py)
+├── .claude/skills/             # Claude Code skills: lab-report, clean-comments
 └── labs/001-hadoop-and-hive/
     ├── pyproject.toml          # lab-001-hadoop-and-hive: package deps only
     ├── src/lab001/             # importable as `lab001`
@@ -18,6 +19,7 @@ The repository is a [uv workspace](https://docs.astral.sh/uv/concepts/projects/w
     ├── scripts/                # data download and other one-off scripts
     ├── task.pdf                # assignment
     ├── draft.ipynb             # the lab, end to end
+    ├── assets/                 # optional diagrams: *.mmd -> *.svg (notebook), *.pdf (report)
     ├── data/                   # downloaded datasets (git-ignored)
     └── report/                 # report.tex, references.bib, screenshots.toml, assets/
 ```
@@ -71,6 +73,7 @@ uv add --package lab-002-<topic> numpy ...   # the lab's own deps
   ```
 
 - Reusable helpers (cluster commands, DB clients) go in the lab's `src/lab<NNN>/`, not in the notebook.
+- Diagrams are Mermaid sources in `labs/<lab>/assets/*.mmd`. Render them with `uv run scripts/render_mermaid.py labs/<lab>/assets/*.mmd`, which writes an `.svg` (embed it in the notebook as an image: `![…](assets/x.svg)`) and a `.pdf` (used by the report). Commit the source and both renders together.
 - The lab's `infra/docker-compose.yml` sets `name: lab<NNN>`. Every lab's compose file lives in a directory called `infra/`, so without an explicit name all labs share the project name `infra` and treat each other's containers as orphans.
 
 ## Reports

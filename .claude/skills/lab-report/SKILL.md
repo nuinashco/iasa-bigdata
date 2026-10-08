@@ -5,12 +5,15 @@ description: Write, update or rebuild the LaTeX lab report (звіт) for a lab 
 
 # Lab report
 
-Turns a finished lab into the PDF the student submits. Each lab directory looks like this:
+Turns a finished lab into the PDF the student submits. It starts where the notebook work ends: `draft.ipynb` is complete, executed, and the user has reviewed it and asked for the report. If the notebook is still changing (the user is reviewing it, or asks only for screenshots mid-way), confirm before building on it, because every number and figure is taken from it.
+
+Each lab directory looks like this:
 
 ```
 labs/<NNN-name>/
   task.pdf            # assignment: tasks + «Вимоги до звіту» (required report sections)
   draft.ipynb         # executed notebook: every command, query and result, with outputs saved
+  assets/             # diagrams made while building the notebook: *.mmd source -> *.svg, *.pdf
   report/
     report.tex        # the report (you write this)
     references.bib
@@ -22,6 +25,7 @@ labs/<NNN-name>/
 Shared tooling (already in the repo, don't re-create it):
 - `latex/iasa-lab.cls`: KPI formatting and the title page. Details in `references/latex.md`.
 - `latex/build.sh`: builds in Docker (XeLaTeX, biber, real Times New Roman). Only Docker is needed.
+- `scripts/render_mermaid.py`: renders `labs/<lab>/assets/*.mmd` diagrams to SVG (notebook) and PDF (report).
 - `labs/001-hadoop-and-hive/report/`: a complete worked example of everything below. Read it before writing a new report; it's the best guide to tone, depth and structure.
 
 ## Workflow
@@ -75,6 +79,22 @@ uv run .claude/skills/lab-report/scripts/nb_screenshots.py labs/<lab>/draft.ipyn
 ```
 
 Look at a few PNGs: right content, nothing from neighbouring cells, long logs cut at a sensible place. Only outputs are captured, so put the SQL itself in listings: listings stay searchable and sharp at any zoom.
+
+### 3a. Diagrams
+
+Diagrams were made while building the notebook: `labs/<lab>/assets/*.mmd` is the source, rendered to `.svg` (shown in the notebook) and `.pdf` (vector, for the report; XeLaTeX can't include SVG). Use the same diagrams in the report so both show the same picture:
+
+```latex
+\addimg{../assets/architecture.pdf}{0.95}{Архітектура кластера}{fig:architecture}
+```
+
+(paths are relative to `report/`). Re-render only if a `.pdf` is missing or older than its `.mmd`:
+
+```bash
+uv run scripts/render_mermaid.py labs/<lab>/assets/*.mmd
+```
+
+If the report needs a diagram the notebook doesn't have (e.g. a data-flow overview), add a new `.mmd` to `labs/<lab>/assets/` and render it the same way, rather than drawing it in LaTeX. The renderer loads a pinned Mermaid from a CDN, so it needs internet access.
 
 ### 4. Write the report
 
